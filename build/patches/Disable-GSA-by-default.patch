@@ -1,0 +1,274 @@
+From: uazo <uazo@users.noreply.github.com>
+Date: Sun, 7 May 2023 14:01:56 +0000
+Subject: Disable GSA by default
+
+License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+---
+ .../src/org/chromium/base/PackageUtils.java   |  1 +
+ .../chrome/browser/IntentHandler.java         |  6 ---
+ .../chrome/browser/share/LensUtils.java       | 13 +----
+ .../chromium/chrome/browser/gsa/GSAUtils.java | 49 +++----------------
+ .../GoogleBottomBarActionsHandler.java        | 19 +------
+ .../chrome/browser/pdf/PdfCoordinator.java    |  2 +-
+ .../Disable-GSA-by-default.inc                |  1 +
+ 7 files changed, 13 insertions(+), 78 deletions(-)
+ create mode 100644 cromite_flags/chrome/browser/flags/android/chrome_feature_list_cc/Disable-GSA-by-default.inc
+
+diff --git a/base/android/java/src/org/chromium/base/PackageUtils.java b/base/android/java/src/org/chromium/base/PackageUtils.java
+--- a/base/android/java/src/org/chromium/base/PackageUtils.java
++++ b/base/android/java/src/org/chromium/base/PackageUtils.java
+@@ -185,6 +185,7 @@ public class PackageUtils {
+      * @return Package name of assistant app, or null if unable to get.
+      */
+     public static @Nullable String getDefaultAssistantPackageName(Context context) {
++        if ((true)) return null;
+         @Nullable String defaultAssistantSetting =
+                 Settings.Secure.getString(context.getContentResolver(), DEFAULT_ASSISTANT_SETTING);
+         if (defaultAssistantSetting == null || defaultAssistantSetting.isBlank()) {
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/IntentHandler.java b/chrome/android/java/src/org/chromium/chrome/browser/IntentHandler.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/IntentHandler.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/IntentHandler.java
+@@ -52,7 +52,6 @@ import org.chromium.chrome.browser.document.ChromeLauncherActivity;
+ import org.chromium.chrome.browser.externalnav.IntentWithRequestMetadataHandler;
+ import org.chromium.chrome.browser.externalnav.IntentWithRequestMetadataHandler.RequestMetadata;
+ import org.chromium.chrome.browser.flags.ChromeFeatureList;
+-import org.chromium.chrome.browser.gsa.GSAUtils;
+ import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteCoordinator;
+ import org.chromium.chrome.browser.pdf.PdfUtils;
+ import org.chromium.chrome.browser.profiles.Profile;
+@@ -347,9 +346,6 @@ public class IntentHandler {
+     public static final String EXTRA_TIPS_NOTIFICATION_FEATURE_TYPE =
+             "org.chromium.chrome.browser.tips_notification_feature_type";
+ 
+-    /** The package name for the Google Search App. */
+-    public static final String PACKAGE_GSA = GSAUtils.GSA_PACKAGE_NAME;
+-
+     /** Action to launch the Chrome Item Picker UI, e.g.: tabs. */
+     public static final String EXTRA_OPEN_CHROME_ITEM_PICKER =
+             "org.chromium.chrome.browser.actions.open_chrome_item_picker";
+@@ -632,8 +628,6 @@ public class IntentHandler {
+             return ExternalAppId.LINE;
+         } else if (PACKAGE_WHATSAPP.equals(packageName)) {
+             return ExternalAppId.WHATSAPP;
+-        } else if (PACKAGE_GSA.equals(packageName)) {
+-            return ExternalAppId.GSA;
+         } else if (ContextUtils.getApplicationContext().getPackageName().equals(packageName)) {
+             return ExternalAppId.CHROME;
+         } else if (assumeNonNull(packageName).startsWith(WEBAPK_PACKAGE_PREFIX)) {
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/share/LensUtils.java b/chrome/android/java/src/org/chromium/chrome/browser/share/LensUtils.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/share/LensUtils.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/share/LensUtils.java
+@@ -46,12 +46,7 @@ public class LensUtils {
+             if (context == null) {
+                 return "";
+             }
+-            String agsaVersion = GSAUtils.getAgsaVersionName();
+-            if (agsaVersion == null) {
+                 return "";
+-            } else {
+-                return agsaVersion;
+-            }
+         }
+     }
+ 
+@@ -74,14 +69,10 @@ public class LensUtils {
+      * @return Whether the package is valid.
+      */
+     public static boolean isValidAgsaPackage() {
+-        if (sFakePassableLensEnvironmentForTesting) {
+-            return true;
+-        }
+-
+-        return ExternalAuthUtils.getInstance().isGoogleSigned(IntentHandler.PACKAGE_GSA);
++        return false;
+     }
+ 
+     public static boolean isGoogleLensFeatureEnabled(boolean isIncognito) {
+-        return !isIncognito;
++        return false;
+     }
+ }
+diff --git a/chrome/browser/gsa/java/src/org/chromium/chrome/browser/gsa/GSAUtils.java b/chrome/browser/gsa/java/src/org/chromium/chrome/browser/gsa/GSAUtils.java
+--- a/chrome/browser/gsa/java/src/org/chromium/chrome/browser/gsa/GSAUtils.java
++++ b/chrome/browser/gsa/java/src/org/chromium/chrome/browser/gsa/GSAUtils.java
+@@ -7,24 +7,15 @@ package org.chromium.chrome.browser.gsa;
+ import android.content.pm.PackageInfo;
+ import android.text.TextUtils;
+ 
+-import org.chromium.base.PackageUtils;
+ import org.chromium.base.ResettersForTesting;
+ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.build.annotations.Nullable;
+-import org.chromium.components.externalauth.ExternalAuthUtils;
+ 
+ /** This class provides utilities for the state of Google Search App. */
+ @NullMarked
+ public class GSAUtils {
+-    private static final Object sPackageInfoLock = new Object();
+-    @Nullable private static volatile PackageInfo sPackageInfo;
+     private static boolean sFakePassableGsaEnvironmentForTesting;
+ 
+-    public static final String GSA_PACKAGE_NAME = "com.google.android.googlequicksearchbox";
+-    public static final String GSA_CLASS_NAME =
+-            "com.google.android.apps.search.googleapp.activity.GoogleAppActivity";
+-    public static final String VOICE_SEARCH_INTENT_ACTION = "android.intent.action.VOICE_ASSIST";
+-
+     /**
+      * If true, short-circuit GSA checks to return a valid environment. Used by test cases.
+      *
+@@ -39,7 +30,7 @@ public class GSAUtils {
+      * @return Whether the given package name is the package name for Google Search App.
+      */
+     public static boolean isGsaPackageName(String packageName) {
+-        return GSA_PACKAGE_NAME.equals(packageName);
++        return false;
+     }
+ 
+     /**
+@@ -51,6 +42,7 @@ public class GSAUtils {
+      */
+     public static boolean isAgsaVersionBelowMinimum(
+             @Nullable String installedVersionName, @Nullable String minimumVersionName) {
++        if ((true)) return false;
+         if (TextUtils.isEmpty(installedVersionName) || TextUtils.isEmpty(minimumVersionName)) {
+             return true;
+         }
+@@ -81,12 +73,8 @@ public class GSAUtils {
+      * @return The version name of the Agsa package or null if it can't be found.
+      */
+     public static @Nullable String getAgsaVersionName() {
+-        if (sFakePassableGsaEnvironmentForTesting) {
+-            // Return a version that is likely to be above any minimums.
+-            return "100.0";
+-        }
+-        PackageInfo info = getAgsaPackageInfo();
+-        return info == null ? null : info.versionName;
++        PackageInfo packageInfo = null;
++        return packageInfo == null ? null : packageInfo.versionName;
+     }
+ 
+     /**
+@@ -95,11 +83,7 @@ public class GSAUtils {
+      * @return Whether the AGSA is enabled
+      */
+     public static boolean isAgsaEnabled() {
+-        if (sFakePassableGsaEnvironmentForTesting) {
+-            return true;
+-        }
+-        PackageInfo info = getAgsaPackageInfo();
+-        return info != null && info.applicationInfo != null && info.applicationInfo.enabled;
++        return false;
+     }
+ 
+     /**
+@@ -108,23 +92,7 @@ public class GSAUtils {
+      * @return Whether the package is valid.
+      */
+     public static boolean isValidAgsaPackage() {
+-        if (sFakePassableGsaEnvironmentForTesting) {
+-            return true;
+-        }
+-
+-        return ExternalAuthUtils.getInstance().isGoogleSigned(GSA_PACKAGE_NAME);
+-    }
+-
+-    @Nullable
+-    private static PackageInfo getAgsaPackageInfo() {
+-        if (sPackageInfo == null) {
+-            synchronized (sPackageInfoLock) {
+-                if (sPackageInfo == null) {
+-                    sPackageInfo = PackageUtils.getPackageInfo(GSA_PACKAGE_NAME, 0);
+-                }
+-            }
+-        }
+-        return sPackageInfo;
++        return false;
+     }
+ 
+     /**
+@@ -133,10 +101,5 @@ public class GSAUtils {
+      * @param packageInfo The package info to set for AGSA.
+      */
+     public static void setAgsaPackageInfoForTesting(@Nullable PackageInfo packageInfo) {
+-        sPackageInfo = packageInfo;
+-        ResettersForTesting.register(
+-                () -> {
+-                    sPackageInfo = null;
+-                });
+     }
+ }
+diff --git a/chrome/browser/ui/android/google_bottom_bar/java/src/org/chromium/chrome/browser/ui/google_bottom_bar/GoogleBottomBarActionsHandler.java b/chrome/browser/ui/android/google_bottom_bar/java/src/org/chromium/chrome/browser/ui/google_bottom_bar/GoogleBottomBarActionsHandler.java
+--- a/chrome/browser/ui/android/google_bottom_bar/java/src/org/chromium/chrome/browser/ui/google_bottom_bar/GoogleBottomBarActionsHandler.java
++++ b/chrome/browser/ui/android/google_bottom_bar/java/src/org/chromium/chrome/browser/ui/google_bottom_bar/GoogleBottomBarActionsHandler.java
+@@ -4,9 +4,6 @@
+ 
+ package org.chromium.chrome.browser.ui.google_bottom_bar;
+ 
+-import static org.chromium.chrome.browser.gsa.GSAUtils.GSA_CLASS_NAME;
+-import static org.chromium.chrome.browser.gsa.GSAUtils.GSA_PACKAGE_NAME;
+-import static org.chromium.chrome.browser.gsa.GSAUtils.VOICE_SEARCH_INTENT_ACTION;
+ import static org.chromium.chrome.browser.ui.google_bottom_bar.GoogleBottomBarLogger.GoogleBottomBarButtonEvent.SEARCHBOX_HOME;
+ import static org.chromium.chrome.browser.ui.google_bottom_bar.GoogleBottomBarLogger.GoogleBottomBarButtonEvent.SEARCHBOX_LENS;
+ import static org.chromium.chrome.browser.ui.google_bottom_bar.GoogleBottomBarLogger.GoogleBottomBarButtonEvent.SEARCHBOX_SEARCH;
+@@ -105,11 +102,6 @@ class GoogleBottomBarActionsHandler {
+     }
+ 
+     void onSearchboxMicTap() {
+-        GoogleBottomBarLogger.logButtonClicked(SEARCHBOX_VOICE_SEARCH);
+-        Intent intent = new Intent(VOICE_SEARCH_INTENT_ACTION);
+-        intent.setPackage(GSA_PACKAGE_NAME);
+-
+-        startGoogleAppActivityForResult(intent, "openGoogleAppVoiceSearch");
+     }
+ 
+     void onSearchboxLensTap(View buttonView) {
+@@ -148,21 +140,13 @@ class GoogleBottomBarActionsHandler {
+     }
+ 
+     private void openGoogleAppSearch() {
+-        Intent intent = new Intent(SearchManager.INTENT_ACTION_GLOBAL_SEARCH);
+-        intent.setPackage(GSA_PACKAGE_NAME);
+-
+-        startGoogleAppActivityForResult(intent, "openGoogleAppSearch");
+     }
+ 
+     private void openGoogleAppHome() {
+-        Intent intent = new Intent(Intent.ACTION_MAIN);
+-        intent.addCategory(Intent.CATEGORY_INFO);
+-        intent.setClassName(GSA_PACKAGE_NAME, GSA_CLASS_NAME);
+-
+-        startGoogleAppActivityForResult(intent, "openGoogleAppHome");
+     }
+ 
+     private void startGoogleAppActivityForResult(Intent intent, String actionName) {
++        if ((true)) return;
+         intent.putExtra(EXTRA_IS_LAUNCHED_FROM_CHROME_SEARCH_ENTRYPOINT, true);
+ 
+         if (PackageManagerUtils.canResolveActivity(intent)) {
+@@ -268,6 +252,7 @@ class GoogleBottomBarActionsHandler {
+     }
+ 
+     private void sendPendingIntentWithUrl(PendingIntent pendingIntent) {
++        if ((true)) return;
+         Tab tab = mTabProvider.get();
+         if (tab == null) {
+             Log.e(TAG, "Can't send pending intent as tab is null.");
+diff --git a/chrome/browser/ui/android/pdf/internal/java/src/org/chromium/chrome/browser/pdf/PdfCoordinator.java b/chrome/browser/ui/android/pdf/internal/java/src/org/chromium/chrome/browser/pdf/PdfCoordinator.java
+--- a/chrome/browser/ui/android/pdf/internal/java/src/org/chromium/chrome/browser/pdf/PdfCoordinator.java
++++ b/chrome/browser/ui/android/pdf/internal/java/src/org/chromium/chrome/browser/pdf/PdfCoordinator.java
+@@ -1331,7 +1331,7 @@ public class PdfCoordinator
+ 
+     @Override
+     public @Nullable String requestAssistContent(String filename, boolean isWorkProfile) {
+-        if (mUri == null) {
++        if ((true)) {
+             return null;
+         }
+ 
+diff --git a/cromite_flags/chrome/browser/flags/android/chrome_feature_list_cc/Disable-GSA-by-default.inc b/cromite_flags/chrome/browser/flags/android/chrome_feature_list_cc/Disable-GSA-by-default.inc
+new file mode 100644
+--- /dev/null
++++ b/cromite_flags/chrome/browser/flags/android/chrome_feature_list_cc/Disable-GSA-by-default.inc
+@@ -0,0 +1 @@
++SET_CROMITE_FEATURE_DISABLED(kExperimentsForAgsa);
+--

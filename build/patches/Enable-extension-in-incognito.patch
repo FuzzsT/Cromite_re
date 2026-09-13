@@ -1,0 +1,2281 @@
+From: uazo <uazo@users.noreply.github.com>
+Date: Thu, 20 Nov 2025 12:53:28 +0000
+Subject: Enable extensions in incognito
+
+Full activation of incognito mode in experimental extension
+
+License: GPL-3.0-only - https://spdx.org/licenses/GPL-3.0-only.html
+---
+ .../chrome/browser/ChromeTabbedActivity.java  |  10 +-
+ .../chrome/browser/app/ChromeActivity.java    |  40 ++++-
+ ...StripLayoutTrailingButtonsCoordinator.java |   2 +-
+ .../customtabs/BaseCustomTabActivity.java     |   3 +-
+ .../CustomTabIntentDataProvider.java          |   3 +
+ .../tabbed_mode/TabbedRootUiCoordinator.java  |   2 +-
+ .../browser/tabmodel/TabModelJniBridge.java   |   3 +-
+ .../tabmodel/TabModelSelectorBase.java        |  14 ++
+ .../browser/toolbar/ToolbarManager.java       |  37 ++--
+ .../developer_private_functions.cc            |   3 +-
+ .../browser/extensions/extension_tab_util.cc  |   2 +-
+ .../page_live_state_decorator_helper.cc       |  17 ++
+ .../tabmodel/IncognitoTabModelImpl.java       |  10 +-
+ .../tabmodel/IncognitoTabModelObserver.java   |   3 +
+ .../extension_action_delegate_android.cc      |   1 +
+ .../extension_action_delegate_android.h       |   2 +-
+ .../extensions/extension_actions_bridge.cc    |  23 ++-
+ .../extensions/extension_actions_bridge.h     |   4 +-
+ .../extensions_menu_delegate_android.cc       |   1 +
+ .../ui/extensions/ExtensionActionsBridge.java |  56 +++++-
+ .../ui/extensions/ExtensionsMenuBridge.java   | 127 ++++++++++----
+ .../extensions/ExtensionsToolbarBridge.java   | 165 ++++++++++++------
+ .../ui/android/tab_model/tab_model_list.cc    |   6 +
+ .../ui/android/tab_model/tab_model_list.h     |   1 +
+ .../tab_model/tab_model_list_observer.h       |   2 +
+ .../ExtensionAccessControlButtonMediator.java |   3 +-
+ .../ExtensionActionListCoordinator.java       |  10 ++
+ .../ExtensionActionListMediator.java          |  23 ++-
+ .../extensions/ExtensionsMenuCoordinator.java |  18 +-
+ .../extensions/ExtensionsMenuMediator.java    |  28 ++-
+ .../ExtensionsToolbarCoordinator.java         |   4 +
+ .../ExtensionsToolbarCoordinatorImpl.java     |  34 ++--
+ .../browser/toolbar/top/ToolbarPhone.java     |  19 ++
+ .../browser_window/ChromeAndroidTaskImpl.java |  53 ++++--
+ .../ChromeAndroidTaskFeature.java             |   2 +-
+ .../ChromeAndroidTaskFeatureKey.java          |  15 +-
+ .../extensions/extensions_menu_view_model.cc  |   7 +-
+ .../extensions/extensions_menu_view_model.h   |   6 +-
+ .../SidePanelContainerCoordinatorImpl.java    |   4 +-
+ .../dev/SidePanelDevFeatureFactory.java       |   2 +-
+ components/tabs/impl/tab_collection.cc        |  19 ++
+ components/tabs/impl/tab_strip_collection.cc  |   4 +-
+ .../chromium/ui/listmenu/ListMenuHost.java    |   4 +
+ .../ui/widget/AnchoredPopupWindow.java        |   7 +
+ 44 files changed, 606 insertions(+), 193 deletions(-)
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java b/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+@@ -128,6 +128,7 @@ import org.chromium.chrome.browser.contextmenu.ChromeContextMenuPopulator;
+ import org.chromium.chrome.browser.contextmenu.ChromeContextMenuPopulatorFactory;
+ import org.chromium.chrome.browser.cookies.CookiesFetcher;
+ import org.chromium.chrome.browser.crypto.CipherFactory;
++import org.chromium.chrome.browser.customtabs.CustomTabActivity;
+ import org.chromium.chrome.browser.data_sharing.DataSharingIntentUtils;
+ import org.chromium.chrome.browser.data_sharing.DataSharingTabGroupUtils;
+ import org.chromium.chrome.browser.data_sharing.DataSharingTabManager;
+@@ -1054,15 +1055,18 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
+ 
+     @Override
+     protected void addWindowingFeatures(
++            @BrowserWindowType int browserWindowType,
+             ChromeAndroidTask chromeAndroidTask,
+             Profile profile,
++            @Nullable TabModel tabModel,
+             ActivityWindowAndroid activityWindowAndroid) {
+-        super.addWindowingFeatures(chromeAndroidTask, profile, activityWindowAndroid);
++        super.addWindowingFeatures(browserWindowType, chromeAndroidTask, profile, tabModel, activityWindowAndroid);
+ 
+         chromeAndroidTask.addFeature(
+                 new ChromeAndroidTaskFeatureKey(
+                         TabbedWindowStateTracker.class,
+                         /* profile= */ null,
++                        /* tabModel */ null,
+                         /* activityWindowAndroid= */ null),
+                 () -> TabbedWindowStateTracker.create(mWindowId));
+     }
+@@ -4545,6 +4549,10 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
+             coordinator.showExtensionsMenu();
+             RecordUserAction.record("MobileMenuExtensionsMenu");
+         } else if (id == R.id.manage_extensions_menu_id) {
++            if (getCurrentTabModel().isIncognito()) {
++                CustomTabActivity.showInfoPage(this, UrlConstants.CHROME_EXTENSIONS_URL);
++                return true;
++            }
+             LoadUrlParams params =
+                     new LoadUrlParams(
+                             UrlConstants.CHROME_EXTENSIONS_URL, PageTransition.AUTO_TOPLEVEL);
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java b/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java
+@@ -205,6 +205,7 @@ import org.chromium.chrome.browser.tab.TabSelectionType;
+ import org.chromium.chrome.browser.tab.TabState;
+ import org.chromium.chrome.browser.tab.TabUtils;
+ import org.chromium.chrome.browser.tab_ui.TabContentManager;
++import org.chromium.chrome.browser.tabmodel.IncognitoTabModelObserver;
+ import org.chromium.chrome.browser.tabmodel.SupportedProfileType;
+ import org.chromium.chrome.browser.tabmodel.TabCreator;
+ import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
+@@ -236,6 +237,9 @@ import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskTrackerFac
+ import org.chromium.chrome.browser.ui.device_lock.MissingDeviceLockLauncher;
+ import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
+ import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
++import org.chromium.chrome.browser.ui.extensions.ExtensionActionsBridge;
++import org.chromium.chrome.browser.ui.extensions.ExtensionsMenuBridge;
++import org.chromium.chrome.browser.ui.extensions.ExtensionsToolbarBridge;
+ import org.chromium.chrome.browser.ui.extensions.windowing.ExtensionWindowControllerBridge;
+ import org.chromium.chrome.browser.ui.extensions.windowing.ExtensionWindowControllerBridgeFactory;
+ import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
+@@ -1180,10 +1184,24 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
+             // TODO(crbug.com/491791326): Handle multiple profiles for mobile.
+             Profile profile = tabModelSelector.getCurrentModel().getProfile();
+             assert profile != null;
+-            addWindowingFeatures(chromeAndroidTask, profile, activityWindowAndroid);
++            addWindowingFeatures(browserWindowType, chromeAndroidTask, profile, /* tabModel */ tabModelSelector.getCurrentModel(), activityWindowAndroid);
+ 
+             // 4. Make the ChromeAndroidTask available via OneshotSupplier.
+             mChromeAndroidTaskSupplier.set(chromeAndroidTask);
++
++            tabModelSelector.addIncognitoTabModelObserver(
++                    new IncognitoTabModelObserver() {
++                        @Override
++                        public void onAssociateWithBrowserWindow() {
++                            var task = getChromeAndroidTaskSupplier().get();
++                            var tabModel = tabModelSelector.getModel(true);
++                            var incognitoProfile = tabModel.getProfile();
++                            addWindowingFeatures(browserWindowType, task, incognitoProfile, tabModel, activityWindowAndroid);
++                        }
++
++                        @Override
++                        public void didDestroyed() {}
++                    });
+         }
+     }
+ 
+@@ -1197,13 +1215,31 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
+      * ChromeAndroidTask}.
+      */
+     protected void addWindowingFeatures(
++            @BrowserWindowType int browserWindowType,
+             ChromeAndroidTask chromeAndroidTask,
+             Profile profile,
++            @Nullable TabModel tabModel,
+             ActivityWindowAndroid activityWindowAndroid) {
+         chromeAndroidTask.addFeature(
+                 new ChromeAndroidTaskFeatureKey(
+-                        ExtensionWindowControllerBridge.class, profile, activityWindowAndroid),
++                        ExtensionWindowControllerBridge.class, profile, activityWindowAndroid,
++                        browserWindowType == BrowserWindowType.CUSTOM_TAB && tabModel.isIncognito()
++                            ? tabModel
++                            : null,
++                        /*destructionOrder*/ 10),
+                 ExtensionWindowControllerBridgeFactory::create);
++        chromeAndroidTask.addFeature(
++                new ChromeAndroidTaskFeatureKey(
++                        ExtensionsToolbarBridge.class, profile, activityWindowAndroid, tabModel, /*destructionOrder*/ 3),
++                () -> ExtensionsToolbarBridge.create(chromeAndroidTask, profile));
++        chromeAndroidTask.addFeature(
++                new ChromeAndroidTaskFeatureKey(
++                        ExtensionActionsBridge.class, profile, activityWindowAndroid, tabModel, /*destructionOrder*/ 2),
++                () -> ExtensionActionsBridge.create(chromeAndroidTask, profile));
++        chromeAndroidTask.addFeature(
++                new ChromeAndroidTaskFeatureKey(
++                        ExtensionsMenuBridge.class, profile, activityWindowAndroid, tabModel, /*destructionOrder*/ 1),
++                () -> ExtensionsMenuBridge.create(chromeAndroidTask, profile));
+     }
+ 
+     @Override
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/StripLayoutTrailingButtonsCoordinator.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/StripLayoutTrailingButtonsCoordinator.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/StripLayoutTrailingButtonsCoordinator.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/StripLayoutTrailingButtonsCoordinator.java
+@@ -560,7 +560,7 @@ public class StripLayoutTrailingButtonsCoordinator {
+             if (task != null) {
+                 task.addFeature(
+                         new ChromeAndroidTaskFeatureKey(
+-                                GlicSplitButtonDelegateBridge.class, profile, mWindowAndroid),
++                                GlicSplitButtonDelegateBridge.class, profile, mWindowAndroid, /*destructionOrder*/ 10),
+                         () -> mGlicSplitButtonDelegateBridge);
+             }
+         }
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/customtabs/BaseCustomTabActivity.java b/chrome/android/java/src/org/chromium/chrome/browser/customtabs/BaseCustomTabActivity.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/customtabs/BaseCustomTabActivity.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/customtabs/BaseCustomTabActivity.java
+@@ -1139,7 +1139,7 @@ public abstract class BaseCustomTabActivity extends ChromeActivity {
+             @SupportedProfileType
+             int supportedProfileType =
+                     isOffTheRecord
+-                            ? SupportedProfileType.OFF_THE_RECORD
++                            ? SupportedProfileType.MIXED
+                             : SupportedProfileType.REGULAR;
+             initializeChromeAndroidTask(
+                     browserWindowType,
+@@ -1857,6 +1857,7 @@ public abstract class BaseCustomTabActivity extends ChromeActivity {
+         @CustomTabsUiType int type = mIntentDataProvider.getUiType();
+         switch (type) {
+             case CustomTabsUiType.DEFAULT:
++            case CustomTabsUiType.INFO_PAGE:
+                 if (browserWindowInterfaceEnabled) {
+                     return BrowserWindowType.CUSTOM_TAB;
+                 }
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/customtabs/CustomTabIntentDataProvider.java b/chrome/android/java/src/org/chromium/chrome/browser/customtabs/CustomTabIntentDataProvider.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/customtabs/CustomTabIntentDataProvider.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/customtabs/CustomTabIntentDataProvider.java
+@@ -362,6 +362,7 @@ public class CustomTabIntentDataProvider extends BrowserServicesIntentDataProvid
+ 
+     private final boolean mEnableUrlBarHiding;
+     private boolean mInteractWithBackground;
++    private boolean mIsExtension = false;
+     private List<CustomButtonParams> mCustomButtonParams;
+     private @Nullable Drawable mCloseButtonIcon;
+     private final boolean mIsCloseButtonEnabled;
+@@ -770,6 +771,7 @@ public class CustomTabIntentDataProvider extends BrowserServicesIntentDataProvid
+         mSideSheetRoundedCornersPosition =
+                 getActivitySideSheetRoundedCornersPositionFromIntent(intent);
+ 
++        mIsExtension = getUrlToLoad().startsWith(UrlConstants.CHROME_EXTENSIONS_URL);
+         logCustomTabFeatures(intent, colorScheme);
+         String packageName = getClientPackageNameFromSessionOrCallingActivity(mIntent, mSession);
+         RecordHistogram.recordBooleanHistogram(
+@@ -1419,6 +1421,7 @@ public class CustomTabIntentDataProvider extends BrowserServicesIntentDataProvid
+ 
+     @Override
+     public @CustomTabProfileType int getCustomTabMode() {
++        if (mIsExtension) return CustomTabProfileType.REGULAR;
+         return AlwaysIncognitoLinkInterceptor.isAlwaysIncognito()
+                 ? CustomTabProfileType.INCOGNITO
+                 : (ChromeFeatureList.sMayLaunchurlUsesSeparateStoragePartition.isEnabled()
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedRootUiCoordinator.java b/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedRootUiCoordinator.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedRootUiCoordinator.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedRootUiCoordinator.java
+@@ -1478,7 +1478,7 @@ public class TabbedRootUiCoordinator extends RootUiCoordinator {
+                                 new ChromeAndroidTaskFeatureKey(
+                                         ContextualTasksBridge.class,
+                                         originalProfile,
+-                                        mWindowAndroid),
++                                        mWindowAndroid, /*destructionOrder*/ 9),
+                                 () -> mContextualTasksBridge);
+             }
+         }
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelJniBridge.java b/chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelJniBridge.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelJniBridge.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelJniBridge.java
+@@ -167,8 +167,7 @@ public abstract class TabModelJniBridge implements TabModelInternal {
+ 
+     @Override
+     public void dissociateWithBrowserWindow() {
+-        assert mNativeAndroidBrowserWindow != 0;
+-
++        if (mNativeTabModelJniBridge == 0 || mNativeAndroidBrowserWindow == 0) return;
+         TabModelJniBridgeJni.get().dissociateWithBrowserWindow(mNativeTabModelJniBridge);
+         mNativeAndroidBrowserWindow = 0;
+     }
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelSelectorBase.java b/chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelSelectorBase.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelSelectorBase.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelSelectorBase.java
+@@ -460,6 +460,20 @@ public abstract class TabModelSelectorBase
+         }
+     }
+ 
++    @Override
++    public void onAssociateWithBrowserWindow() {
++        for (IncognitoTabModelObserver observer : mIncognitoObservers) {
++            observer.onAssociateWithBrowserWindow();
++        }
++    }
++
++    @Override
++    public void didDestroyed() {
++        for (IncognitoTabModelObserver observer : mIncognitoObservers) {
++            observer.didDestroyed();
++        }
++    }
++
+     @Override
+     public void didBecomeEmpty() {
+         for (IncognitoTabModelObserver observer : mIncognitoObservers) {
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java b/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java
+@@ -176,6 +176,7 @@ import org.chromium.chrome.browser.toolbar.bottom.BottomBarConstraintsSupplier;
+ import org.chromium.chrome.browser.toolbar.bottom.BottomControlsContentDelegate;
+ import org.chromium.chrome.browser.toolbar.bottom.BottomControlsCoordinator;
+ import org.chromium.chrome.browser.toolbar.bottom.ScrollingBottomViewResourceFrameLayout;
++import org.chromium.chrome.browser.customtabs.CustomTabActivity;
+ import org.chromium.chrome.browser.toolbar.extensions.ExtensionsToolbarCoordinator;
+ import org.chromium.chrome.browser.toolbar.forward_button.ForwardButtonCoordinator;
+ import org.chromium.chrome.browser.toolbar.home_button.HomeButtonCoordinator;
+@@ -427,6 +428,7 @@ public class ToolbarManager
+     private @MonotonicNonNull BackButtonCoordinator mBackButtonCoordinator;
+     private @MonotonicNonNull ForwardButtonCoordinator mForwardButtonCoordinator;
+     private @Nullable ExtensionsToolbarCoordinator mExtensionsToolbarCoordinator;
++    private Runnable mInitExtensionsToolbarCoordinator;
+ 
+     private final BrowserStateBrowserControlsVisibilityDelegate mControlsVisibilityDelegate;
+     private int mFullscreenFocusToken = TokenHolder.INVALID_TOKEN;
+@@ -2682,8 +2684,6 @@ public class ToolbarManager
+             ChromeAndroidTask task = mChromeAndroidTaskSupplier.get();
+             // ChromeAndroidTask is available only on Desktop Android.
+             if (task != null) {
+-                Profile tabModelProfile =
+-                        assertNonNull(mTabModelSelector.getCurrentModel().getProfile());
+                 // Register as an Activity-scoped feature of {@link ChromeAndroidTask}. This ensures
+                 // its C++ UnownedUserData objects are destroyed prior to the host (BWI) when a
+                 // Profile is destroyed on mobile Android. Explicit destruction in
+@@ -2695,17 +2695,20 @@ public class ToolbarManager
+                             }
+                             mExtensionsToolbarCoordinator = null;
+                         };
+-                mExtensionsToolbarCoordinator =
++                mInitExtensionsToolbarCoordinator = () -> {
++                    Profile tabModelProfile =
++                            assertNonNull(mTabModelSelector.getCurrentModel().getProfile());
++                    mExtensionsToolbarCoordinator =
+                         (ExtensionsToolbarCoordinator)
+                                 task.addFeature(
+                                         new ChromeAndroidTaskFeatureKey(
+                                                 ExtensionsToolbarCoordinator.class,
+                                                 tabModelProfile,
+-                                                (ActivityWindowAndroid) mWindowAndroid),
+-                                        () ->
+-                                                ExtensionsToolbarCoordinator.maybeCreate(
++                                                (ActivityWindowAndroid) mWindowAndroid, /*destructionOrder*/ 9),
++                                        () -> {
++                                                var coordinator = ExtensionsToolbarCoordinator.maybeCreate(
+                                                         mActivity,
+-                                                        extensionsToolbarStub,
++                                                        mControlContainer.findViewById(R.id.extensions_toolbar_container_stub),
+                                                         mWindowAndroid,
+                                                         task,
+                                                         tabModelProfile,
+@@ -2717,10 +2720,21 @@ public class ToolbarManager
+                                                         selectionDropdownMenuDelegate,
+                                                         mTabModelSelector,
+                                                         mModalDialogManagerSupplier.get(),
+-                                                        cleanup));
+-                if (mExtensionsToolbarCoordinator != null) {
+-                    mToolbar.setExtensionsToolbarCoordinator(mExtensionsToolbarCoordinator);
+-                }
++                                                        AlwaysIncognitoLinkInterceptor.isAlwaysIncognito()
++                                                                ? (url) -> CustomTabActivity.showInfoPage(mActivity, url)
++                                                                : null,
++                                                        cleanup);
++                                                if (mExtensionsToolbarCoordinator == null) {
++                                                    mExtensionsToolbarCoordinator = coordinator;
++                                                    mToolbar.setExtensionsToolbarCoordinator(coordinator);
++                                                }
++                                                return coordinator;
++                                        });
++                    if (mExtensionsToolbarCoordinator != null) {
++                        mToolbar.setExtensionsToolbarCoordinator(mExtensionsToolbarCoordinator);
++                    }
++                };
++                mInitExtensionsToolbarCoordinator.run();
+             }
+         }
+ 
+@@ -3995,6 +4009,7 @@ public class ToolbarManager
+      *     if extensions are not supported on this build.
+      */
+     public @Nullable ExtensionsToolbarCoordinator getExtensionsToolbarCoordinator() {
++        if (mExtensionsToolbarCoordinator == null) mInitExtensionsToolbarCoordinator.run();
+         return mExtensionsToolbarCoordinator;
+     }
+ 
+diff --git a/chrome/browser/extensions/api/developer_private/developer_private_functions.cc b/chrome/browser/extensions/api/developer_private/developer_private_functions.cc
+--- a/chrome/browser/extensions/api/developer_private/developer_private_functions.cc
++++ b/chrome/browser/extensions/api/developer_private/developer_private_functions.cc
+@@ -1779,7 +1779,8 @@ DeveloperPrivateDismissSafetyHubExtensionsMenuNotificationFunction::Run() {
+   }
+ 
+   Profile* profile = Profile::FromBrowserContext(browser_context());
+-  SafetyHubMenuNotificationServiceFactory::GetForProfile(profile)
++  if (auto* menu_notification_service_factory = SafetyHubMenuNotificationServiceFactory::GetForProfile(profile))
++    menu_notification_service_factory
+       ->DismissActiveNotificationOfModule(
+           safety_hub::SafetyHubModuleType::EXTENSIONS);
+   return RespondNow(NoArguments());
+diff --git a/chrome/browser/extensions/extension_tab_util.cc b/chrome/browser/extensions/extension_tab_util.cc
+--- a/chrome/browser/extensions/extension_tab_util.cc
++++ b/chrome/browser/extensions/extension_tab_util.cc
+@@ -1155,7 +1155,7 @@ bool ExtensionTabUtil::OpenOptionsPageFromWebContents(
+   if (!url) {
+     return false;
+   }
+-  const bool open_in_tab = ShouldOpenInTab(extension);
++  const bool open_in_tab = false; //ShouldOpenInTab(extension);
+   BrowserWindowInterface* browser =
+       browser_window_util::GetBrowserForTabContents(*web_contents);
+   CHECK(browser);
+diff --git a/chrome/browser/performance_manager/decorators/helpers/page_live_state_decorator_helper.cc b/chrome/browser/performance_manager/decorators/helpers/page_live_state_decorator_helper.cc
+--- a/chrome/browser/performance_manager/decorators/helpers/page_live_state_decorator_helper.cc
++++ b/chrome/browser/performance_manager/decorators/helpers/page_live_state_decorator_helper.cc
+@@ -84,6 +84,14 @@ class ActiveTabTracker : public TabModelObserver {
+       }
+       active_tab_ = nullptr;
+     }
++    else if (!tab) {
++      active_tab_ = nullptr;
++    }
++  }
++
++  void Clear() {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    active_tab_ = nullptr;
+   }
+ 
+  private:
+@@ -123,6 +131,15 @@ class ActiveTabObserver : public TabModelListObserver {
+     tracker_map_.erase(tab_model);
+   }
+ 
++  void OnFinishingTabClosure() override {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    for (const auto& [tab_model, tracker] : tracker_map_) {
++      if (tracker) {
++        tracker->Clear();
++      }
++    }
++  }
++
+   absl::flat_hash_map<const TabModel*, std::unique_ptr<ActiveTabTracker>>
+       tracker_map_ GUARDED_BY_CONTEXT(sequence_checker_);
+ 
+diff --git a/chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/IncognitoTabModelImpl.java b/chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/IncognitoTabModelImpl.java
+--- a/chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/IncognitoTabModelImpl.java
++++ b/chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/IncognitoTabModelImpl.java
+@@ -156,7 +156,7 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
+         }
+ 
+         for (IncognitoTabModelObserver observer : mIncognitoObservers) {
+-            observer.didBecomeEmpty();
++            observer.didDestroyed();
+         }
+ 
+         mDelegateModel
+@@ -167,6 +167,10 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
+         mCurrentTabSupplier.set(null);
+         mTabCountSupplier.set(0);
+ 
++        for (IncognitoTabModelObserver observer : mIncognitoObservers) {
++            observer.didBecomeEmpty();
++        }
++
+         mDelegateModel = EmptyTabModel.getInstance(true);
+         for (Callback<TabModelInternal> delegateModelObserver : mDelegateModelObservers) {
+             delegateModelObserver.onResult(mDelegateModel);
+@@ -204,6 +208,10 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
+         assert mNativeAndroidBrowserWindow == 0;
+         mNativeAndroidBrowserWindow = nativeAndroidBrowserWindow;
+         mDelegateModel.associateWithBrowserWindow(nativeAndroidBrowserWindow);
++
++        for (IncognitoTabModelObserver observer : mIncognitoObservers) {
++            observer.onAssociateWithBrowserWindow();
++        }
+     }
+ 
+     @Override
+diff --git a/chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/IncognitoTabModelObserver.java b/chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/IncognitoTabModelObserver.java
+--- a/chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/IncognitoTabModelObserver.java
++++ b/chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/IncognitoTabModelObserver.java
+@@ -33,4 +33,7 @@ public interface IncognitoTabModelObserver {
+ 
+     /** Called when the last tab of the {@link IncognitoTabModel} is closed. */
+     default void didBecomeEmpty() {}
++
++    default void onAssociateWithBrowserWindow() {}
++    default void didDestroyed() {}
+ }
+diff --git a/chrome/browser/ui/android/extensions/extension_action_delegate_android.cc b/chrome/browser/ui/android/extensions/extension_action_delegate_android.cc
+--- a/chrome/browser/ui/android/extensions/extension_action_delegate_android.cc
++++ b/chrome/browser/ui/android/extensions/extension_action_delegate_android.cc
+@@ -34,6 +34,7 @@ void ExtensionActionDelegateAndroid::AttachToModel(
+ void ExtensionActionDelegateAndroid::DetachFromModel() {
+   CHECK(model_);
+   model_ = nullptr;
++  toolbar_android_ = nullptr;
+ }
+ 
+ void ExtensionActionDelegateAndroid::RegisterCommand() {
+diff --git a/chrome/browser/ui/android/extensions/extension_action_delegate_android.h b/chrome/browser/ui/android/extensions/extension_action_delegate_android.h
+--- a/chrome/browser/ui/android/extensions/extension_action_delegate_android.h
++++ b/chrome/browser/ui/android/extensions/extension_action_delegate_android.h
+@@ -53,7 +53,7 @@ class ExtensionActionDelegateAndroid : public ExtensionActionDelegate {
+   const ToolbarActionsModel::ActionId action_id_;
+ 
+   // The JNI bridge to communicate with the Java side.
+-  const raw_ptr<extensions::ExtensionsToolbarAndroid> toolbar_android_;
++  raw_ptr<extensions::ExtensionsToolbarAndroid> toolbar_android_;
+ 
+   // The platform-agnostic view model.
+   raw_ptr<ExtensionActionViewModel> model_{nullptr};
+diff --git a/chrome/browser/ui/android/extensions/extension_actions_bridge.cc b/chrome/browser/ui/android/extensions/extension_actions_bridge.cc
+--- a/chrome/browser/ui/android/extensions/extension_actions_bridge.cc
++++ b/chrome/browser/ui/android/extensions/extension_actions_bridge.cc
+@@ -11,6 +11,8 @@
+ #include "base/files/file_util.h"
+ #include "base/logging.h"
+ #include "base/task/thread_pool.h"
++#include "extensions/browser/process_manager.h"
++#include "extensions/browser/process_manager_factory.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "ui/events/android/key_event_android.h"
+@@ -23,10 +25,9 @@
+ namespace extensions {
+ 
+ ExtensionActionsBridge::ExtensionActionsBridge(
+-    BrowserWindowInterface* browser,
++    Profile* profile,
+     const base::android::JavaRef<jobject>& java_object)
+-    : browser_(browser),
+-      profile_(browser->GetProfile()),
++    : profile_(profile),
+       java_object_(java_object) {}
+ 
+ ExtensionActionsBridge::~ExtensionActionsBridge() = default;
+@@ -51,6 +52,16 @@ void ExtensionActionsBridge::ClearExtensionData(JNIEnv* env) {
+         install_directory, install_updacked_directory));
+ }
+ 
++void ExtensionActionsBridge::CloseBackgroundHosts(JNIEnv* env) {
++  extensions::ProcessManager* manager =
++          extensions::ProcessManagerFactory::GetForBrowserContextIfExists(profile_);
++  if (manager) {
++    manager->CloseBackgroundHosts();
++    ProcessManager::Get(profile_->GetOriginalProfile())
++            ->MaybeCreateStartupBackgroundHosts();
++  }
++}
++
+ void ExtensionActionsBridge::Destroy(JNIEnv* env) {
+   delete this;
+ }
+@@ -58,11 +69,9 @@ void ExtensionActionsBridge::Destroy(JNIEnv* env) {
+ static int64_t JNI_ExtensionActionsBridge_Init(
+     JNIEnv* env,
+     const base::android::JavaRef<jobject>& java_object,
+-    int64_t j_browser_window_interface) {
+-  BrowserWindowInterface* browser =
+-      reinterpret_cast<BrowserWindowInterface*>(j_browser_window_interface);
++    Profile* profile) {
+   return reinterpret_cast<int64_t>(
+-      new ExtensionActionsBridge(browser, java_object));
++      new ExtensionActionsBridge(profile, java_object));
+ }
+ 
+ static bool JNI_ExtensionActionsBridge_ExtensionsEnabled(JNIEnv* env,
+diff --git a/chrome/browser/ui/android/extensions/extension_actions_bridge.h b/chrome/browser/ui/android/extensions/extension_actions_bridge.h
+--- a/chrome/browser/ui/android/extensions/extension_actions_bridge.h
++++ b/chrome/browser/ui/android/extensions/extension_actions_bridge.h
+@@ -19,7 +19,7 @@ namespace extensions {
+ // This bridge is created and owned by Java UI code.
+ class ExtensionActionsBridge {
+  public:
+-  ExtensionActionsBridge(BrowserWindowInterface* browser,
++  ExtensionActionsBridge(Profile* profile,
+                          const base::android::JavaRef<jobject>& java_object);
+   ExtensionActionsBridge(const ExtensionActionsBridge&) = delete;
+   ExtensionActionsBridge& operator=(const ExtensionActionsBridge&) = delete;
+@@ -27,10 +27,10 @@ class ExtensionActionsBridge {
+ 
+   // JNI implementations.
+   void ClearExtensionData(JNIEnv* env);
++  void CloseBackgroundHosts(JNIEnv* env);
+   void Destroy(JNIEnv* env);
+ 
+  private:
+-  const raw_ptr<BrowserWindowInterface> browser_;
+   const raw_ptr<Profile> profile_;
+   const base::android::ScopedJavaGlobalRef<jobject> java_object_;
+ };
+diff --git a/chrome/browser/ui/android/extensions/extensions_menu_delegate_android.cc b/chrome/browser/ui/android/extensions/extensions_menu_delegate_android.cc
+--- a/chrome/browser/ui/android/extensions/extensions_menu_delegate_android.cc
++++ b/chrome/browser/ui/android/extensions/extensions_menu_delegate_android.cc
+@@ -85,6 +85,7 @@ ExtensionsMenuDelegateAndroid::ExtensionsMenuDelegateAndroid(
+ ExtensionsMenuDelegateAndroid::~ExtensionsMenuDelegateAndroid() = default;
+ 
+ void ExtensionsMenuDelegateAndroid::Destroy(JNIEnv* env) {
++  menu_model_->DestroyActionModels();
+   delete this;
+ }
+ 
+diff --git a/chrome/browser/ui/android/extensions/java/src/org/chromium/chrome/browser/ui/extensions/ExtensionActionsBridge.java b/chrome/browser/ui/android/extensions/java/src/org/chromium/chrome/browser/ui/extensions/ExtensionActionsBridge.java
+--- a/chrome/browser/ui/android/extensions/java/src/org/chromium/chrome/browser/ui/extensions/ExtensionActionsBridge.java
++++ b/chrome/browser/ui/android/extensions/java/src/org/chromium/chrome/browser/ui/extensions/ExtensionActionsBridge.java
+@@ -8,24 +8,35 @@ import org.jni_zero.JNINamespace;
+ import org.jni_zero.JniType;
+ import org.jni_zero.NativeMethods;
+ 
+-import org.chromium.base.lifetime.Destroyable;
+ import org.chromium.base.lifetime.LifetimeAssert;
+ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.build.annotations.Nullable;
+ import org.chromium.chrome.browser.profiles.Profile;
++import org.chromium.chrome.browser.tabmodel.TabModel;
+ import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask;
++import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeature;
++import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeature.InitInfo;
+ 
+ /** A JNI bridge to interact with extension actions for the toolbar. */
+ @NullMarked
+ @JNINamespace("extensions")
+-public class ExtensionActionsBridge implements Destroyable {
++public class ExtensionActionsBridge implements ChromeAndroidTaskFeature {
+     private final @Nullable LifetimeAssert mLifetimeAssert = LifetimeAssert.create(this);
+     private long mNativeExtensionActionsBridge;
++    private static ExtensionActionsBridge currentExtensionActionsBridge;
++    private final Profile mProfile;
++    private final ChromeAndroidTask mTask;
+ 
+-    public ExtensionActionsBridge(ChromeAndroidTask task, Profile profile) {
++    private ExtensionActionsBridge(ChromeAndroidTask task, Profile profile) {
++        mTask = task;
++        mProfile = profile;
++    }
++
++    @Override
++    public void onAddedToTask(InitInfo initInfo) {
+         mNativeExtensionActionsBridge =
+                 ExtensionActionsBridgeJni.get()
+-                        .init(this, task.getOrCreateNativeBrowserWindowPtr(profile));
++                        .init(this, mProfile);
+     }
+ 
+     /** Returns whether extensions are enabled for the profile. */
+@@ -33,27 +44,56 @@ public class ExtensionActionsBridge implements Destroyable {
+         return ExtensionActionsBridgeJni.get().extensionsEnabled(profile);
+     }
+ 
+-    public void clearExtensionData() {
+-        ExtensionActionsBridgeJni.get().clearExtensionData(mNativeExtensionActionsBridge);
++    @Override
++    public void onFeatureRemoved() {
++        destroy();
+     }
+ 
+     @Override
+-    public void destroy() {
++    public void onTabModelSelected(ChromeAndroidTask task, TabModel tabModel) {
++        if (mTask == task && tabModel.getProfile() == mProfile) {
++            Instance().mNativeExtensionActionsBridge = mNativeExtensionActionsBridge;
++        }
++    }
++
++    public static ExtensionActionsBridge Instance() {
++        if (currentExtensionActionsBridge == null)
++            currentExtensionActionsBridge = new ExtensionActionsBridge(null, null);
++        return currentExtensionActionsBridge;
++    }
++
++    public static ExtensionActionsBridge create(ChromeAndroidTask task, Profile profile) {
++        return new ExtensionActionsBridge(task, profile);
++    }
++
++    void destroy() {
++        closeBackgroundHosts();
+         assert mNativeExtensionActionsBridge != 0;
+         ExtensionActionsBridgeJni.get().destroy(mNativeExtensionActionsBridge);
+         mNativeExtensionActionsBridge = 0;
+         LifetimeAssert.destroy(mLifetimeAssert);
+     }
+ 
++    public void clearExtensionData() {
++        ExtensionActionsBridgeJni.get().clearExtensionData(Instance().mNativeExtensionActionsBridge);
++    }
++
++    private void closeBackgroundHosts() {
++        if (mProfile.isIncognitoBranded())
++            ExtensionActionsBridgeJni.get().closeBackgroundHosts(mNativeExtensionActionsBridge);
++    }
++
+     @NativeMethods
+     public interface Natives {
+ 
+         boolean extensionsEnabled(@JniType("Profile*") Profile profile);
+ 
+-        long init(ExtensionActionsBridge bridge, long browserWindowInterfacePtr);
++        long init(ExtensionActionsBridge bridge, @JniType("Profile*") Profile profile);
+ 
+         void clearExtensionData(long nativeExtensionActionsBridge);
+ 
++        void closeBackgroundHosts(long nativeExtensionActionsBridge);
++
+         void destroy(long nativeExtensionActionsBridge);
+     }
+ }
+diff --git a/chrome/browser/ui/android/extensions/java/src/org/chromium/chrome/browser/ui/extensions/ExtensionsMenuBridge.java b/chrome/browser/ui/android/extensions/java/src/org/chromium/chrome/browser/ui/extensions/ExtensionsMenuBridge.java
+--- a/chrome/browser/ui/android/extensions/java/src/org/chromium/chrome/browser/ui/extensions/ExtensionsMenuBridge.java
++++ b/chrome/browser/ui/android/extensions/java/src/org/chromium/chrome/browser/ui/extensions/ExtensionsMenuBridge.java
+@@ -17,34 +17,77 @@ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.build.annotations.Nullable;
+ import org.chromium.chrome.browser.profiles.Profile;
+ import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask;
++import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeature;
++import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeature.InitInfo;
++import org.chromium.chrome.browser.tabmodel.TabModel;
++import android.graphics.Rect;
++import android.util.ArrayMap;
++import java.util.Map;
+ 
+ import java.util.List;
+ 
+ /** A JNI bridge that provides native extensions menu data to the Java UI. */
+ @NullMarked
+ @JNINamespace("extensions")
+-public class ExtensionsMenuBridge implements Destroyable {
++public class ExtensionsMenuBridge implements ChromeAndroidTaskFeature {
+     private final @Nullable LifetimeAssert mLifetimeAssert = LifetimeAssert.create(this);
+ 
+     private long mNativeExtensionsMenuDelegateAndroid;
+-    private final Observer mObserver;
+-
+-    public ExtensionsMenuBridge(
+-            ChromeAndroidTask task,
+-            Profile profile,
+-            ExtensionsToolbarBridge toolbarBridge,
+-            Observer observer) {
+-        mObserver = observer;
++    private Observer mObserver;
++    private static ExtensionsMenuBridge sInstance;
++    private final Map<ChromeAndroidTask, Observer> mObservers = new ArrayMap<>();
++    private final ChromeAndroidTask mTask;
++    private final Profile mProfile;
++    private final ExtensionsToolbarBridge mToolbarBridge;
++
++    private ExtensionsMenuBridge(
++            ChromeAndroidTask task, Profile profile, ExtensionsToolbarBridge toolbarBridge) {
++        mTask = task;
++        mProfile = profile;
++        mToolbarBridge = toolbarBridge;
++    }
++
++    public static ExtensionsMenuBridge Instance() {
++        if (sInstance == null) sInstance = new ExtensionsMenuBridge(null, null, null);
++        return sInstance;
++    }
++
++    public static ExtensionsMenuBridge create(ChromeAndroidTask task, Profile profile) {
++        return new ExtensionsMenuBridge(task, profile, ExtensionsToolbarBridge.Instance());
++    }
++
++    public void setObserver(ChromeAndroidTask task, Observer observer) {
++        Instance().mObservers.put(task, observer);
++        Instance().mObserver = observer;
++    }
++
++    @Override
++    public void onAddedToTask(InitInfo initInfo) {
+         mNativeExtensionsMenuDelegateAndroid =
+                 ExtensionsMenuBridgeJni.get()
+                         .init(
+                                 this,
+-                                task.getOrCreateNativeBrowserWindowPtr(profile),
+-                                toolbarBridge.getNativePtr());
++                                mTask.getOrCreateNativeBrowserWindowPtr(mProfile),
++                                mToolbarBridge.getNativePtr());
+     }
+ 
+     @Override
+-    public void destroy() {
++    public void onFeatureRemoved() {
++        Instance().mObservers.remove(mTask);
++        destroy();
++    }
++
++    @Override
++    public void onTaskBoundsChanged(int displayId, Rect newBoundsInDp, Rect newBoundsInPx) {}
++
++    @Override
++    public void onTabModelSelected(ChromeAndroidTask task, TabModel tabModel) {
++        if (mTask == task && tabModel.getProfile() == mProfile) {
++            Instance().mNativeExtensionsMenuDelegateAndroid = mNativeExtensionsMenuDelegateAndroid;
++            Instance().mObserver = Instance().mObservers.get(mTask);
++        }
++    }
++    private void destroy() {
+         assert mNativeExtensionsMenuDelegateAndroid != 0;
+         ExtensionsMenuBridgeJni.get().destroy(mNativeExtensionsMenuDelegateAndroid);
+         mNativeExtensionsMenuDelegateAndroid = 0;
+@@ -58,13 +101,13 @@ public class ExtensionsMenuBridge implements Destroyable {
+      */
+     public void executeAction(String extensionId) {
+         ExtensionsMenuBridgeJni.get()
+-                .executeAction(mNativeExtensionsMenuDelegateAndroid, extensionId);
++                .executeAction(Instance().mNativeExtensionsMenuDelegateAndroid, extensionId);
+     }
+ 
+     /** Returns the icon for the given extension index from native. */
+     public @Nullable Bitmap getActionIcon(int actionIndex) {
+         return ExtensionsMenuBridgeJni.get()
+-                .getActionIcon(mNativeExtensionsMenuDelegateAndroid, actionIndex);
++                .getActionIcon(Instance().mNativeExtensionsMenuDelegateAndroid, actionIndex);
+     }
+ 
+     /** Returns the extension site permissions state from native. */
+@@ -77,7 +120,7 @@ public class ExtensionsMenuBridge implements Destroyable {
+ 
+     /** Returns the list of menu entries with their states from native. */
+     public List<ExtensionsMenuTypes.MenuEntryState> getMenuEntries() {
+-        return ExtensionsMenuBridgeJni.get().getMenuEntries(mNativeExtensionsMenuDelegateAndroid);
++        return ExtensionsMenuBridgeJni.get().getMenuEntries(Instance().mNativeExtensionsMenuDelegateAndroid);
+     }
+ 
+     /**
+@@ -87,12 +130,12 @@ public class ExtensionsMenuBridge implements Destroyable {
+      */
+     public ExtensionsMenuTypes.MenuEntryState getMenuEntry(int actionIndex) {
+         return ExtensionsMenuBridgeJni.get()
+-                .getMenuEntry(mNativeExtensionsMenuDelegateAndroid, actionIndex);
++                .getMenuEntry(Instance().mNativeExtensionsMenuDelegateAndroid, actionIndex);
+     }
+ 
+     /** Returns the site settings state from native. */
+     public ExtensionsMenuTypes.SiteSettingsState getSiteSettingsState() {
+-        return ExtensionsMenuBridgeJni.get().getSiteSettings(mNativeExtensionsMenuDelegateAndroid);
++        return ExtensionsMenuBridgeJni.get().getSiteSettings(Instance().mNativeExtensionsMenuDelegateAndroid);
+     }
+ 
+     /**
+@@ -139,42 +182,42 @@ public class ExtensionsMenuBridge implements Destroyable {
+      */
+     public void onSiteSettingsToggleChanged(boolean isChecked) {
+         ExtensionsMenuBridgeJni.get()
+-                .onSiteSettingsToggleChanged(mNativeExtensionsMenuDelegateAndroid, isChecked);
++                .onSiteSettingsToggleChanged(Instance().mNativeExtensionsMenuDelegateAndroid, isChecked);
+     }
+ 
+     /** Returns the optional section to display in the menu. */
+     public int getOptionalSection() {
+         return ExtensionsMenuBridgeJni.get()
+-                .getOptionalSection(mNativeExtensionsMenuDelegateAndroid);
++                .getOptionalSection(Instance().mNativeExtensionsMenuDelegateAndroid);
+     }
+ 
+     /** Returns the list of host access requests. */
+     public List<ExtensionsMenuTypes.HostAccessRequest> getHostAccessRequests() {
+         return ExtensionsMenuBridgeJni.get()
+-                .getHostAccessRequests(mNativeExtensionsMenuDelegateAndroid);
++                .getHostAccessRequests(Instance().mNativeExtensionsMenuDelegateAndroid);
+     }
+ 
+     /** Called when a host access request for `extension_id` is allowed. */
+     public void onAllowExtensionClicked(String extensionId) {
+         ExtensionsMenuBridgeJni.get()
+-                .onAllowExtensionClicked(mNativeExtensionsMenuDelegateAndroid, extensionId);
++                .onAllowExtensionClicked(Instance().mNativeExtensionsMenuDelegateAndroid, extensionId);
+     }
+ 
+     /** Called when a host access request for `extension_id` is dismissed. */
+     public void onDismissExtensionClicked(String extensionId) {
+         ExtensionsMenuBridgeJni.get()
+-                .onDismissExtensionClicked(mNativeExtensionsMenuDelegateAndroid, extensionId);
++                .onDismissExtensionClicked(Instance().mNativeExtensionsMenuDelegateAndroid, extensionId);
+     }
+ 
+     /** Called when the reload page button is clicked. */
+     public void onReloadPageButtonClicked() {
+         ExtensionsMenuBridgeJni.get()
+-                .onReloadPageButtonClicked(mNativeExtensionsMenuDelegateAndroid);
++                .onReloadPageButtonClicked(Instance().mNativeExtensionsMenuDelegateAndroid);
+     }
+ 
+     /** Returns whether the native menu model is ready. */
+     public boolean isReady() {
+-        return ExtensionsMenuBridgeJni.get().isReady(mNativeExtensionsMenuDelegateAndroid);
++        return ExtensionsMenuBridgeJni.get().isReady(Instance().mNativeExtensionsMenuDelegateAndroid);
+     }
+ 
+     /**
+@@ -184,7 +227,10 @@ public class ExtensionsMenuBridge implements Destroyable {
+      */
+     @CalledByNative
+     public void onActionAdded(int actionIndex) {
+-        mObserver.onActionAdded(actionIndex);
++        if (Instance().mNativeExtensionsMenuDelegateAndroid != mNativeExtensionsMenuDelegateAndroid) return;
++        if (Instance().mObserver != null) {
++            Instance().mObserver.onActionAdded(actionIndex);
++        }
+     }
+ 
+     /**
+@@ -195,7 +241,10 @@ public class ExtensionsMenuBridge implements Destroyable {
+      */
+     @CalledByNative
+     public void onActionIconUpdated(int actionIndex) {
+-        mObserver.onActionIconUpdated(actionIndex);
++        if (Instance().mNativeExtensionsMenuDelegateAndroid != mNativeExtensionsMenuDelegateAndroid) return;
++        if (Instance().mObserver != null) {
++            Instance().mObserver.onActionIconUpdated(actionIndex);
++        }
+     }
+ 
+     /**
+@@ -206,7 +255,10 @@ public class ExtensionsMenuBridge implements Destroyable {
+      */
+     @CalledByNative
+     public void onActionRemoved(int actionIndex) {
+-        mObserver.onActionRemoved(actionIndex);
++        if (Instance().mNativeExtensionsMenuDelegateAndroid != mNativeExtensionsMenuDelegateAndroid) return;
++        if (Instance().mObserver != null) {
++            Instance().mObserver.onActionRemoved(actionIndex);
++        }
+     }
+ 
+     /**
+@@ -217,13 +269,13 @@ public class ExtensionsMenuBridge implements Destroyable {
+      */
+     @CalledByNative
+     public void onActionUpdated(int actionIndex) {
+-        mObserver.onActionUpdated(actionIndex);
++        if (Instance().mObserver != null) Instance().mObserver.onActionUpdated(actionIndex);
+     }
+ 
+     /** Callback from native indicating the list of pinned actions changed. */
+     @CalledByNative
+     public void onPinnedActionsChanged() {
+-        mObserver.onPinnedActionsChanged();
++        if (Instance().mObserver != null) Instance().mObserver.onPinnedActionsChanged();
+     }
+ 
+     /**
+@@ -232,40 +284,41 @@ public class ExtensionsMenuBridge implements Destroyable {
+      */
+     @CalledByNative
+     public void onReady() {
+-        mObserver.onReady();
++        //Instance().mObserver.onReady();
+     }
+ 
+     @CalledByNative
+     private void onModelChanged() {
+-        if (mObserver != null) {
+-            mObserver.onModelChanged();
++        if (Instance().mNativeExtensionsMenuDelegateAndroid != mNativeExtensionsMenuDelegateAndroid) return;
++        if (Instance().mObserver != null) {
++            Instance().mObserver.onModelChanged();
+         }
+     }
+ 
+     @CalledByNative
+     private void onHostAccessRequestAdded(@JniType("std::string") String extensionId) {
+-        mObserver.onHostAccessRequestAdded(extensionId);
++        if (Instance().mObserver != null) Instance().mObserver.onHostAccessRequestAdded(extensionId);
+     }
+ 
+     @CalledByNative
+     private void onHostAccessRequestUpdated(@JniType("std::string") String extensionId) {
+-        mObserver.onHostAccessRequestUpdated(extensionId);
++        if (Instance().mObserver != null) Instance().mObserver.onHostAccessRequestUpdated(extensionId);
+     }
+ 
+     @CalledByNative
+     private void onHostAccessRequestRemoved(@JniType("std::string") String extensionId) {
+-        mObserver.onHostAccessRequestRemoved(extensionId);
++        if (Instance().mObserver != null) Instance().mObserver.onHostAccessRequestRemoved(extensionId);
+     }
+ 
+     @CalledByNative
+     private void onHostAccessRequestsCleared() {
+-        mObserver.onHostAccessRequestsCleared();
++        if (Instance().mObserver != null) Instance().mObserver.onHostAccessRequestsCleared();
+     }
+ 
+     @CalledByNative
+     private void onShowHostAccessRequestsInToolbarChanged(
+             @JniType("std::string") String extensionId) {
+-        mObserver.onShowHostAccessRequestsInToolbarChanged(extensionId);
++        if (Instance().mObserver != null) Instance().mObserver.onShowHostAccessRequestsInToolbarChanged(extensionId);
+     }
+ 
+     public interface Observer {
+diff --git a/chrome/browser/ui/android/extensions/java/src/org/chromium/chrome/browser/ui/extensions/ExtensionsToolbarBridge.java b/chrome/browser/ui/android/extensions/java/src/org/chromium/chrome/browser/ui/extensions/ExtensionsToolbarBridge.java
+--- a/chrome/browser/ui/android/extensions/java/src/org/chromium/chrome/browser/ui/extensions/ExtensionsToolbarBridge.java
++++ b/chrome/browser/ui/android/extensions/java/src/org/chromium/chrome/browser/ui/extensions/ExtensionsToolbarBridge.java
+@@ -19,61 +19,112 @@ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.build.annotations.Nullable;
+ import org.chromium.chrome.browser.profiles.Profile;
+ import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask;
++import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeature;
++import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeature.InitInfo;
++import org.chromium.chrome.browser.tabmodel.TabModel;
++import android.graphics.Rect;
++import android.util.ArrayMap;
++import java.util.Map;
+ import org.chromium.chrome.browser.ui.toolbar.InvocationSource;
+ import org.chromium.content_public.browser.WebContents;
+ 
+ /** A JNI bridge to interact with extension actions for the toolbar. */
+ @NullMarked
+ @JNINamespace("extensions")
+-public class ExtensionsToolbarBridge implements Destroyable {
++public class ExtensionsToolbarBridge implements ChromeAndroidTaskFeature {
+     private final @Nullable LifetimeAssert mLifetimeAssert = LifetimeAssert.create(this);
+     private long mNativeExtensionsToolbarAndroid;
+     private final ObserverList<Observer> mObservers = new ObserverList<>();
+-
+-    // The delegates are set via setters because of bidirectional dependencies.
+     private @Nullable ActionListDelegate mActionListDelegate;
+     private @Nullable MenuDelegate mMenuDelegate;
++    private final ChromeAndroidTask mTask;
++    private final Profile mProfile;
++    private static ExtensionsToolbarBridge sInstance;
++    private final Map<ChromeAndroidTask, ActionListDelegate> mActionListDelegates =
++        new ArrayMap<>();
++    private final Map<ChromeAndroidTask, MenuDelegate> mMenuDelegates =
++        new ArrayMap<>();
++
++    private ExtensionsToolbarBridge(ChromeAndroidTask task, Profile profile) {
++        mTask = task;
++        mProfile = profile;
++    }
++
++    public static ExtensionsToolbarBridge Instance() {
++        if (sInstance == null) sInstance = new ExtensionsToolbarBridge(null, null);
++        return sInstance;
++    }
+ 
+-    public ExtensionsToolbarBridge(ChromeAndroidTask task, Profile profile) {
++    public static ExtensionsToolbarBridge create(ChromeAndroidTask task, Profile profile) {
++        return new ExtensionsToolbarBridge(task, profile);
++    }
++
++    @Override
++    public void onAddedToTask(InitInfo initInfo) {
+         mNativeExtensionsToolbarAndroid =
+                 ExtensionsToolbarBridgeJni.get()
+-                        .init(this, task.getOrCreateNativeBrowserWindowPtr(profile));
++                        .init(this, mTask.getOrCreateNativeBrowserWindowPtr(mProfile));
++        if (Instance().mNativeExtensionsToolbarAndroid == 0) {
++            Instance().mNativeExtensionsToolbarAndroid = mNativeExtensionsToolbarAndroid;
++        }
++    }
++
++    @Override
++    public void onFeatureRemoved() {
++        destroy();
+     }
+ 
+     @Override
+-    public void destroy() {
++    public void onTaskBoundsChanged(int displayId, Rect newBoundsInDp, Rect newBoundsInPx) {}
++
++    @Override
++    public void onTabModelSelected(ChromeAndroidTask task, TabModel tabModel) {
++        if (mTask == task && tabModel.getProfile() == mProfile) {
++            Instance().mNativeExtensionsToolbarAndroid = mNativeExtensionsToolbarAndroid;
++            Instance().mActionListDelegate = Instance().mActionListDelegates.get(mTask);
++            Instance().mMenuDelegate = Instance().mMenuDelegates.get(mTask);
++        }
++    }
++
++    private void destroy() {
+         assert mNativeExtensionsToolbarAndroid != 0;
+         ExtensionsToolbarBridgeJni.get().destroy(mNativeExtensionsToolbarAndroid);
++        if (Instance().mNativeExtensionsToolbarAndroid == mNativeExtensionsToolbarAndroid) {
++            Instance().mNativeExtensionsToolbarAndroid = 0;
++        }
+         mNativeExtensionsToolbarAndroid = 0;
+         LifetimeAssert.destroy(mLifetimeAssert);
+     }
+-
+     public void addObserver(Observer observer) {
+-        mObservers.addObserver(observer);
++        Instance().mObservers.addObserver(observer);
+     }
+ 
+     public void removeObserver(Observer observer) {
+-        mObservers.removeObserver(observer);
++        Instance().mObservers.removeObserver(observer);
+     }
+ 
+-    public void setActionListDelegate(@Nullable ActionListDelegate delegate) {
+-        mActionListDelegate = delegate;
++    public void setActionListDelegate(ChromeAndroidTask task, @Nullable ActionListDelegate delegate) {
++        if (delegate == null) return;
++        Instance().mActionListDelegates.put(task, delegate);
++        Instance().mActionListDelegate = delegate;
+     }
+ 
+-    public void setMenuDelegate(@Nullable MenuDelegate delegate) {
+-        mMenuDelegate = delegate;
++    public void setMenuDelegate(ChromeAndroidTask task, @Nullable MenuDelegate delegate) {
++        if (delegate == null) return;
++        Instance().mMenuDelegates.put(task, delegate);
++        Instance().mMenuDelegate = delegate;
+     }
+ 
+     public long getNativePtr() {
+-        assert mNativeExtensionsToolbarAndroid != 0;
+-        return mNativeExtensionsToolbarAndroid;
++        assert Instance().mNativeExtensionsToolbarAndroid != 0;
++        return Instance().mNativeExtensionsToolbarAndroid;
+     }
+ 
+     @Nullable
+     public ExtensionAction getAction(String actionId, @Nullable WebContents webContents) {
+-        assert mNativeExtensionsToolbarAndroid != 0;
++        if (Instance().mNativeExtensionsToolbarAndroid == 0) return null;
+         return ExtensionsToolbarBridgeJni.get()
+-                .getAction(mNativeExtensionsToolbarAndroid, actionId, webContents);
++                .getAction(Instance().mNativeExtensionsToolbarAndroid, actionId, webContents);
+     }
+ 
+     @Nullable
+@@ -95,58 +146,58 @@ public class ExtensionsToolbarBridge implements Destroyable {
+     }
+ 
+     public String[] getAllActionIds() {
+-        assert mNativeExtensionsToolbarAndroid != 0;
+-        return ExtensionsToolbarBridgeJni.get().getAllActionIds(mNativeExtensionsToolbarAndroid);
++        if (Instance().mNativeExtensionsToolbarAndroid == 0) return new String[] {};
++        return ExtensionsToolbarBridgeJni.get().getAllActionIds(Instance().mNativeExtensionsToolbarAndroid);
+     }
+ 
+     public String[] getPinnedActionIds() {
+-        assert mNativeExtensionsToolbarAndroid != 0;
+-        return ExtensionsToolbarBridgeJni.get().getPinnedActionIds(mNativeExtensionsToolbarAndroid);
++        if (Instance().mNativeExtensionsToolbarAndroid == 0) return new String[] {};
++        return ExtensionsToolbarBridgeJni.get().getPinnedActionIds(Instance().mNativeExtensionsToolbarAndroid);
+     }
+ 
+     public boolean isActionDraggable(String actionId) {
+-        assert mNativeExtensionsToolbarAndroid != 0;
++        assert Instance().mNativeExtensionsToolbarAndroid != 0;
+         return ExtensionsToolbarBridgeJni.get()
+-                .isActionDraggable(mNativeExtensionsToolbarAndroid, actionId);
++                .isActionDraggable(Instance().mNativeExtensionsToolbarAndroid, actionId);
+     }
+ 
+     public void executeUserAction(String actionId, @InvocationSource int source) {
+-        assert mNativeExtensionsToolbarAndroid != 0;
++        assert Instance().mNativeExtensionsToolbarAndroid != 0;
+         ExtensionsToolbarBridgeJni.get()
+-                .executeUserAction(mNativeExtensionsToolbarAndroid, actionId, source);
++                .executeUserAction(Instance().mNativeExtensionsToolbarAndroid, actionId, source);
+     }
+ 
+     public void movePinnedAction(String actionId, int targetIndex) {
+-        assert mNativeExtensionsToolbarAndroid != 0;
++        assert Instance().mNativeExtensionsToolbarAndroid != 0;
+         ExtensionsToolbarBridgeJni.get()
+-                .movePinnedAction(mNativeExtensionsToolbarAndroid, actionId, targetIndex);
++                .movePinnedAction(Instance().mNativeExtensionsToolbarAndroid, actionId, targetIndex);
+     }
+ 
+     public void onRequestAccessButtonClicked(WebContents webContents) {
+-        assert mNativeExtensionsToolbarAndroid != 0;
++        assert Instance().mNativeExtensionsToolbarAndroid != 0;
+         ExtensionsToolbarBridgeJni.get()
+-                .onRequestAccessButtonClicked(mNativeExtensionsToolbarAndroid, webContents);
++                .onRequestAccessButtonClicked(Instance().mNativeExtensionsToolbarAndroid, webContents);
+     }
+ 
+-    public RequestAccessButtonParams getRequestAccessButtonParams(WebContents webContents) {
+-        assert mNativeExtensionsToolbarAndroid != 0;
++    public RequestAccessButtonParams getNullableRequestAccessButtonParams(WebContents webContents) {
++        if (Instance().mNativeExtensionsToolbarAndroid == 0) return null;
+         RequestAccessButtonParams params =
+                 ExtensionsToolbarBridgeJni.get()
+-                        .getRequestAccessButtonParams(mNativeExtensionsToolbarAndroid, webContents);
++                        .getRequestAccessButtonParams(Instance().mNativeExtensionsToolbarAndroid, webContents);
+         assert params != null;
+         return params;
+     }
+ 
+-    public ExtensionsMenuButtonState getMenuButtonState(
++    public ExtensionsMenuButtonState getNullableMenuButtonState(
+             WebContents webContents,
+             int canvasWidthDp,
+             int canvasHeightDp,
+             float scaleFactor,
+             int color) {
+-        assert mNativeExtensionsToolbarAndroid != 0;
++        if (Instance().mNativeExtensionsToolbarAndroid == 0) return null;
+         return ExtensionsToolbarBridgeJni.get()
+                 .getMenuButtonState(
+-                        mNativeExtensionsToolbarAndroid,
++                        Instance().mNativeExtensionsToolbarAndroid,
+                         webContents,
+                         canvasWidthDp,
+                         canvasHeightDp,
+@@ -158,12 +209,12 @@ public class ExtensionsToolbarBridge implements Destroyable {
+     public boolean handleKeyDownEvent(KeyEvent event) {
+         assert mNativeExtensionsToolbarAndroid != 0;
+         return ExtensionsToolbarBridgeJni.get()
+-                .handleKeyDownEvent(mNativeExtensionsToolbarAndroid, event);
++                .handleKeyDownEvent(Instance().mNativeExtensionsToolbarAndroid, event);
+     }
+ 
+     @CalledByNative
+     public void showManageExtensionsIPH() {
+-        for (Observer observer : mObservers) {
++        for (Observer observer : Instance().mObservers) {
+             observer.showManageExtensionsIPH();
+         }
+     }
+@@ -182,30 +233,30 @@ public class ExtensionsToolbarBridge implements Destroyable {
+             boolean inspectWithDevTools) {
+         // {@link mActionListDelegate} should be set in {@code ExtensionActionListMediator}'s
+         // constructor.
+-        assert mActionListDelegate != null;
++        assert Instance().mActionListDelegate != null;
+ 
+-        mActionListDelegate.triggerPopup(actionId, nativeHostPtr, inspectWithDevTools);
++        Instance().mActionListDelegate.triggerPopup(actionId, nativeHostPtr, inspectWithDevTools);
+     }
+ 
+     @CalledByNative
+     void showContextMenu(@JniType("std::string") String actionId) {
+         // {@link mActionListDelegate} should be set in {@code ExtensionActionListMediator}'s
+         // constructor.
+-        assert mActionListDelegate != null;
++        assert Instance().mActionListDelegate != null;
+ 
+-        mActionListDelegate.showContextMenu(actionId);
++        Instance().mActionListDelegate.showContextMenu(actionId);
+     }
+ 
+     @CalledByNative
+     public void onRequestAccessButtonParamsChanged() {
+-        for (Observer observer : mObservers) {
++        for (Observer observer : Instance().mObservers) {
+             observer.onRequestAccessButtonParamsChanged();
+         }
+     }
+ 
+     @CalledByNative
+     public void onToolbarControlStateUpdated() {
+-        for (Observer observer : mObservers) {
++        for (Observer observer : Instance().mObservers) {
+             observer.onToolbarControlStateUpdated();
+         }
+     }
+@@ -214,75 +265,75 @@ public class ExtensionsToolbarBridge implements Destroyable {
+     public boolean hasPoppedOutAction() {
+         // {@link mActionListDelegate} should be set in {@code ExtensionActionListMediator}'s
+         // constructor.
+-        assert mActionListDelegate != null;
++        assert Instance().mActionListDelegate != null;
+ 
+-        return mActionListDelegate.hasPoppedOutAction();
++        return Instance().mActionListDelegate.hasPoppedOutAction();
+     }
+ 
+     @CalledByNative
+     public void hideActivePopup() {
+         // {@link mActionListDelegate} should be set in {@code ExtensionActionListMediator}'s
+         // constructor.
+-        assert mActionListDelegate != null;
++        assert Instance().mActionListDelegate != null;
+ 
+-        mActionListDelegate.hideActivePopup();
++        Instance().mActionListDelegate.hideActivePopup();
+     }
+ 
+     @CalledByNative
+     public boolean hasActivePopup() {
+         // {@link mActionListDelegate} should be set in {@code ExtensionActionListMediator}'s
+         // constructor.
+-        assert mActionListDelegate != null;
++        assert Instance().mActionListDelegate != null;
+ 
+-        return mActionListDelegate.hasActivePopup();
++        return Instance().mActionListDelegate.hasActivePopup();
+     }
+ 
+     @CalledByNative
+     public void closeExtensionsMenuIfOpen() {
+         // {@link mMenuDelegate} should be set in {@code ExtensionsMenuCoordinator}'s constructor.
+-        assert mMenuDelegate != null;
++        assert Instance().mMenuDelegate != null;
+ 
+-        mMenuDelegate.closeExtensionsMenuIfOpen();
++        Instance().mMenuDelegate.closeExtensionsMenuIfOpen();
+     }
+ 
+     @CalledByNative
+     public void onActionsInitialized() {
+-        for (Observer observer : mObservers) {
++        for (Observer observer : Instance().mObservers) {
+             observer.onActionsInitialized();
+         }
+     }
+ 
+     @CalledByNative
+     public void onActionAdded(@JniType("std::string") String actionId) {
+-        for (Observer observer : mObservers) {
++        for (Observer observer : Instance().mObservers) {
+             observer.onActionAdded(actionId);
+         }
+     }
+ 
+     @CalledByNative
+     public void onActionRemoved(@JniType("std::string") String actionId) {
+-        for (Observer observer : mObservers) {
++        for (Observer observer : Instance().mObservers) {
+             observer.onActionRemoved(actionId);
+         }
+     }
+ 
+     @CalledByNative
+     public void onActionUpdated(@JniType("std::string") String actionId) {
+-        for (Observer observer : mObservers) {
++        for (Observer observer : Instance().mObservers) {
+             observer.onActionUpdated(actionId);
+         }
+     }
+ 
+     @CalledByNative
+     public void onPinnedActionsChanged() {
+-        for (Observer observer : mObservers) {
++        for (Observer observer : Instance().mObservers) {
+             observer.onPinnedActionsChanged();
+         }
+     }
+ 
+     @CalledByNative
+     public void onActiveWebContentsChanged(WebContents webContents) {
+-        for (Observer observer : mObservers) {
++        for (Observer observer : Instance().mObservers) {
+             observer.onActiveWebContentsChanged(webContents);
+         }
+     }
+diff --git a/chrome/browser/ui/android/tab_model/tab_model_list.cc b/chrome/browser/ui/android/tab_model/tab_model_list.cc
+--- a/chrome/browser/ui/android/tab_model/tab_model_list.cc
++++ b/chrome/browser/ui/android/tab_model/tab_model_list.cc
+@@ -44,6 +44,12 @@ void TabModelList::RemoveTabModel(TabModel* tab_model) {
+   }
+ }
+ 
++void TabModelList::FinishingTabClosure() {
++  for (TabModelListObserver& observer : GetInstance().observers_) {
++    observer.OnFinishingTabClosure();
++  }
++}
++
+ void TabModelList::AddObserver(TabModelListObserver* observer) {
+   GetInstance().observers_.AddObserver(observer);
+ }
+diff --git a/chrome/browser/ui/android/tab_model/tab_model_list.h b/chrome/browser/ui/android/tab_model/tab_model_list.h
+--- a/chrome/browser/ui/android/tab_model/tab_model_list.h
++++ b/chrome/browser/ui/android/tab_model/tab_model_list.h
+@@ -36,6 +36,7 @@ class TabModelList {
+   static void HandlePopupNavigation(NavigateParams* params);
+   static void AddTabModel(TabModel* tab_model);
+   static void RemoveTabModel(TabModel* tab_model);
++  static void FinishingTabClosure();
+ 
+   static void AddObserver(TabModelListObserver* observer);
+   static void RemoveObserver(TabModelListObserver* observer);
+diff --git a/chrome/browser/ui/android/tab_model/tab_model_list_observer.h b/chrome/browser/ui/android/tab_model/tab_model_list_observer.h
+--- a/chrome/browser/ui/android/tab_model/tab_model_list_observer.h
++++ b/chrome/browser/ui/android/tab_model/tab_model_list_observer.h
+@@ -17,6 +17,8 @@ class TabModelListObserver {
+ 
+   // Called after a TabModel is removed.
+   virtual void OnTabModelRemoved(TabModel* tab_model) = 0;
++
++  virtual void OnFinishingTabClosure() {}
+ };
+ 
+ #endif  // CHROME_BROWSER_UI_ANDROID_TAB_MODEL_TAB_MODEL_LIST_OBSERVER_H_
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionAccessControlButtonMediator.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionAccessControlButtonMediator.java
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionAccessControlButtonMediator.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionAccessControlButtonMediator.java
+@@ -103,7 +103,8 @@ class ExtensionAccessControlButtonMediator implements Destroyable {
+ 
+     private void refreshRequestAccessButtonWithWebContents(WebContents webContents) {
+         RequestAccessButtonParams params =
+-                mExtensionsToolbarBridge.getRequestAccessButtonParams(webContents);
++                mExtensionsToolbarBridge.getNullableRequestAccessButtonParams(webContents);
++        if (params == null) return;
+         if (params.getExtensionIds().length > 0) {
+             int count = params.getExtensionIds().length;
+             mModel.set(ExtensionsToolbarProperties.REQUEST_ACCESS_BUTTON_EXTENSION_COUNT, count);
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListCoordinator.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListCoordinator.java
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListCoordinator.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListCoordinator.java
+@@ -46,17 +46,20 @@ public class ExtensionActionListCoordinator implements Destroyable {
+ 
+     private final Context mContext;
+     private final ExtensionActionListRecyclerView mContainer;
++    private final ListMenuButton mExtensionsMenuButton;
+     private final ModelList mModels;
+     private final ExtensionActionListMediator mMediator;
+     private final DragReorderableRecyclerViewAdapter mAdapter;
+     @Nullable private final LifetimeAssert mLifetimeAssert = LifetimeAssert.create(this);
+     private final RecyclerViewDelegate mRecyclerViewDelegate = new RecyclerViewDelegate();
++    public final ExtensionsToolbarBridge mExtensionsToolbarBridge;
+ 
+     private boolean mIsDragging;
+ 
+     public ExtensionActionListCoordinator(
+             Context context,
+             ExtensionActionListRecyclerView container,
++            ListMenuButton extensionsMenuButton,
+             WindowAndroid windowAndroid,
+             ChromeAndroidTask task,
+             Profile profile,
+@@ -69,6 +72,8 @@ public class ExtensionActionListCoordinator implements Destroyable {
+             ModalDialogManager modalDialogManager) {
+         mContext = context;
+         mContainer = container;
++        mExtensionsMenuButton = extensionsMenuButton;
++        mExtensionsToolbarBridge = extensionsToolbarBridge;
+ 
+         mModels = new ModelList();
+         mMediator =
+@@ -83,6 +88,7 @@ public class ExtensionActionListCoordinator implements Destroyable {
+                         extensionsToolbarBridge,
+                         contextMenuPopulatorFactory,
+                         selectionDropdownMenuDelegate,
++                        extensionsMenuButton,
+                         tabModelSelector,
+                         modalDialogManager);
+ 
+@@ -140,6 +146,10 @@ public class ExtensionActionListCoordinator implements Destroyable {
+         LifetimeAssert.setSafeToGc(mLifetimeAssert, true);
+     }
+ 
++    public void openPopup(String actionId) {
++        mMediator.onPrimaryClick(actionId);
++    }
++
+     /**
+      * Executes the given action.
+      *
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListMediator.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListMediator.java
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListMediator.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListMediator.java
+@@ -129,11 +129,11 @@ class ExtensionActionListMediator implements Destroyable {
+     private final WindowAndroid mWindowAndroid;
+     private final ModelList mModels;
+     private final ChromeAndroidTask mTask;
+-    private final Profile mProfile;
+     private final NullableObservableSupplier<Tab> mCurrentTabSupplier;
+     private final @Nullable ContextMenuPopulatorFactory mContextMenuPopulatorFactory;
+     private final @Nullable SelectionDropdownMenuDelegate mSelectionDropdownMenuDelegate;
+     private final ExtensionActionListCoordinator.RecyclerViewDelegate mRecyclerViewDelegate;
++    private final ListMenuButton mExtensionsMenuButton;
+     private final TabModelSelector mTabModelSelector;
+     private final Handler mHandler = new Handler(Looper.getMainLooper());
+ 
+@@ -182,23 +182,24 @@ class ExtensionActionListMediator implements Destroyable {
+             ExtensionsToolbarBridge extensionsToolbarBridge,
+             @Nullable ContextMenuPopulatorFactory contextMenuPopulatorFactory,
+             @Nullable SelectionDropdownMenuDelegate selectionDropdownMenuDelegate,
++            ListMenuButton extensionsMenuButton,
+             TabModelSelector tabModelSelector,
+             ModalDialogManager modalDialogManager) {
+         mContext = context;
+         mWindowAndroid = windowAndroid;
+         mModels = models;
+         mTask = task;
+-        mProfile = profile;
+         mCurrentTabSupplier = currentTabSupplier;
+         mRecyclerViewDelegate = recyclerViewDelegate;
+         mExtensionsToolbarBridge = extensionsToolbarBridge;
+         mContextMenuPopulatorFactory = contextMenuPopulatorFactory;
+         mSelectionDropdownMenuDelegate = selectionDropdownMenuDelegate;
++        mExtensionsMenuButton = extensionsMenuButton;
+         mTabModelSelector = tabModelSelector;
+         mModalDialogManager = modalDialogManager;
+         mModalDialogManager.addObserver(mModalDialogManagerObserver);
+ 
+-        mExtensionsToolbarBridge.setActionListDelegate(mToolbarDelegate);
++        mExtensionsToolbarBridge.setActionListDelegate(mTask, mToolbarDelegate);
+         mExtensionsToolbarBridge.addObserver(mToolbarObserver);
+         reconcileActionItems();
+     }
+@@ -220,7 +221,7 @@ class ExtensionActionListMediator implements Destroyable {
+ 
+         mModalDialogManager.removeObserver(mModalDialogManagerObserver);
+         mExtensionsToolbarBridge.removeObserver(mToolbarObserver);
+-        mExtensionsToolbarBridge.setActionListDelegate(null);
++        mExtensionsToolbarBridge.setActionListDelegate(mTask, null);
+         LifetimeAssert.setSafeToGc(mLifetimeAssert, true);
+     }
+ 
+@@ -618,7 +619,8 @@ class ExtensionActionListMediator implements Destroyable {
+         }
+     }
+ 
+-    private void onPrimaryClick(String actionId) {
++    public void onPrimaryClick(String actionId) {
++        if (!mTask.isActive()) return;
+         if (mActionState instanceof ActionState.PopupActive activeState) {
+             boolean closeOnly = activeState.getActionId().equals(actionId);
+             closePopup();
+@@ -694,7 +696,7 @@ class ExtensionActionListMediator implements Destroyable {
+                         ExtensionActionPopupContents.create(nativeHostPtr, inspectWithDevTools),
+                         inspectWithDevTools);
+ 
+-        requestActionVisibility(actionId, () -> showPopupOnAnchor());
++        showPopupOnAnchor();
+     }
+ 
+     private void showPopupOnAnchor() {
+@@ -710,10 +712,7 @@ class ExtensionActionListMediator implements Destroyable {
+         ListMenuButton buttonView =
+                 (ListMenuButton) mRecyclerViewDelegate.getButtonViewForId(actionId);
+         if (buttonView == null) {
+-            contents.destroy();
+-            mActionState = new ActionState.Idle();
+-            undoPopout();
+-            return;
++            buttonView = mExtensionsMenuButton;
+         }
+ 
+         Activity activity = mWindowAndroid.getActivity().get();
+@@ -818,7 +817,7 @@ class ExtensionActionListMediator implements Destroyable {
+         }
+         ExtensionActionContextMenuBridge bridge =
+                 new ExtensionActionContextMenuBridge(
+-                        mTask, mProfile, actionId, webContents, ContextMenuSource.TOOLBAR_ACTION);
++                        mTask, currentTab.getProfile(), actionId, webContents, ContextMenuSource.TOOLBAR_ACTION);
+         ExtensionActionContextMenuUtils.showContextMenu(
+                 mContext,
+                 buttonView,
+@@ -851,7 +850,7 @@ class ExtensionActionListMediator implements Destroyable {
+ 
+     /** Updates the list of displayed actions to fit within the provided width constraint. */
+     public void fitActionsWithinWidth(int availableWidth) {
+-        mAvailableWidthForPinnedActions = availableWidth;
++        // mAvailableWidthForPinnedActions = availableWidth;
+ 
+         // If this is called during an animation (e.g. the user resizes window during pinning /
+         // unpinning animation), we abandon the animation and update to the new state instantly.
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsMenuCoordinator.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsMenuCoordinator.java
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsMenuCoordinator.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsMenuCoordinator.java
+@@ -103,6 +103,7 @@ public class ExtensionsMenuCoordinator
+                 }
+             };
+     private final ModalDialogManager mModalDialogManager;
++    private final @Nullable Callback<String> mOpenUrlInCustomTab;
+     private final Callback<@Nullable Tab> mTabSupplierObserver =
+             (tab) -> updateButtonState(tab != null ? tab.getWebContents() : null);
+ 
+@@ -136,7 +137,8 @@ public class ExtensionsMenuCoordinator
+             TabCreator tabCreator,
+             ExtensionsToolbarBridge extensionsToolbarBridge,
+             MenuButtonPinningDelegate menuButtonPinningDelegate,
+-            ModalDialogManager modalDialogManager) {
++            ModalDialogManager modalDialogManager,
++            @Nullable Callback<String> openUrlInCustomTab) {
+         mContext = context;
+         mCurrentTabSupplier = currentTabSupplier;
+         mProfile = profile;
+@@ -146,8 +148,9 @@ public class ExtensionsMenuCoordinator
+         mExtensionsToolbarBridge = extensionsToolbarBridge;
+         mMenuButtonPinningDelegate = menuButtonPinningDelegate;
+         mModalDialogManager = modalDialogManager;
++        mOpenUrlInCustomTab = openUrlInCustomTab;
+ 
+-        mExtensionsToolbarBridge.setMenuDelegate(this);
++        mExtensionsToolbarBridge.setMenuDelegate(task, this);
+ 
+         mContentView = LayoutInflater.from(mContext).inflate(R.layout.extensions_menu, null, false);
+ 
+@@ -202,6 +205,11 @@ public class ExtensionsMenuCoordinator
+ 
+         mExtensionsMenuButton.addPopupListener(
+                 new ListMenuHost.PopupMenuShownListener() {
++                    @Override
++                    public void onPreparePopupMenuShow(AnchoredPopupWindow popupWindow) {
++                        popupWindow.disableDismissOnRectHidden();
++                    }
++
+                     @Override
+                     public void onPopupMenuShown() {}
+ 
+@@ -275,7 +283,8 @@ public class ExtensionsMenuCoordinator
+                         /* onDismissMenu= */ mExtensionsMenuButton::dismiss,
+                         /* onReady= */ () -> {
+                             mExtensionsMenuButton.showMenu();
+-                        });
++                        },
++                        mOpenUrlInCustomTab);
+     }
+ 
+     /**
+@@ -473,8 +482,9 @@ public class ExtensionsMenuCoordinator
+                                 / density);
+ 
+         ExtensionsMenuButtonState state =
+-                mExtensionsToolbarBridge.getMenuButtonState(
++                mExtensionsToolbarBridge.getNullableMenuButtonState(
+                         webContents, iconSizeDp, iconSizeDp, density, color);
++        if (state == null) return;
+ 
+         if (state.getIcon() != null) {
+             mExtensionsMenuButton.setImageBitmap(state.getIcon());
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsMenuMediator.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsMenuMediator.java
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsMenuMediator.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsMenuMediator.java
+@@ -12,6 +12,7 @@ import androidx.annotation.VisibleForTesting;
+ import org.chromium.base.lifetime.Destroyable;
+ import org.chromium.base.supplier.NullableObservableSupplier;
+ import org.chromium.build.annotations.NullMarked;
++import org.chromium.build.annotations.Nullable;
+ import org.chromium.chrome.browser.extensions.ContextMenuSource;
+ import org.chromium.chrome.browser.profiles.Profile;
+ import org.chromium.chrome.browser.tab.Tab;
+@@ -19,6 +20,7 @@ import org.chromium.chrome.browser.tab.TabLaunchType;
+ import org.chromium.chrome.browser.tabmodel.TabCreator;
+ import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask;
+ import org.chromium.chrome.browser.ui.extensions.ExtensionActionContextMenuBridge;
++import org.chromium.base.Callback;
+ import org.chromium.chrome.browser.ui.extensions.ExtensionsMenuBridge;
+ import org.chromium.chrome.browser.ui.extensions.ExtensionsMenuTypes;
+ import org.chromium.chrome.browser.ui.extensions.ExtensionsToolbarBridge;
+@@ -50,8 +52,8 @@ class ExtensionsMenuMediator implements Destroyable, ExtensionsMenuBridge.Observ
+     private final Runnable mOnReady;
+     private final Runnable mOnDismissMenu;
+     private final ChromeAndroidTask mTask;
+-    private final Profile mProfile;
+     private final TabCreator mTabCreator;
++    private final @Nullable Callback<String> mOpenUrlInCustomTab;
+ 
+     /**
+      * @param context The context to use.
+@@ -76,17 +78,18 @@ class ExtensionsMenuMediator implements Destroyable, ExtensionsMenuBridge.Observ
+             PropertyModel mainPageModel,
+             PropertyModel sitePermissionsPropertyModel,
+             Runnable onDismissMenu,
+-            Runnable onReady) {
++            Runnable onReady,
++            @Nullable Callback<String> openUrlInCustomTab) {
+         mActionModels = actionModels;
+         mContext = context;
+         mCurrentTabSupplier = currentTabSupplier;
+         mOnDismissMenu = onDismissMenu;
+         mOnReady = onReady;
+         mTabCreator = tabCreator;
++        mOpenUrlInCustomTab = openUrlInCustomTab;
+         mTask = task;
+-        mProfile = profile;
+-        mMenuBridge =
+-                new ExtensionsMenuBridge(mTask, mProfile, toolbarBridge, /* observer= */ this);
++        mMenuBridge = ExtensionsMenuBridge.Instance();
++        mMenuBridge.setObserver(mTask, /* observer= */ this);
+ 
+         mMainPageModel = mainPageModel;
+         mSitePermissionsPageModel = sitePermissionsPropertyModel;
+@@ -115,7 +118,7 @@ class ExtensionsMenuMediator implements Destroyable, ExtensionsMenuBridge.Observ
+ 
+         ExtensionActionContextMenuBridge contextMenuBridge =
+                 new ExtensionActionContextMenuBridge(
+-                        mTask, mProfile, actionId, webContents, ContextMenuSource.MENU_ITEM);
++                        mTask, currentTab.getProfile(), actionId, webContents, ContextMenuSource.MENU_ITEM);
+ 
+         ExtensionActionContextMenuUtils.showContextMenu(
+                 mContext,
+@@ -178,7 +181,7 @@ class ExtensionsMenuMediator implements Destroyable, ExtensionsMenuBridge.Observ
+     /** Destroys the mediator. */
+     @Override
+     public void destroy() {
+-        mMenuBridge.destroy();
++        // Bridge lifetime is owned by ChromeAndroidTask.
+     }
+ 
+     /**
+@@ -286,6 +289,7 @@ class ExtensionsMenuMediator implements Destroyable, ExtensionsMenuBridge.Observ
+                     break;
+                 }
+             }
++            if (oldIndex < 0) return;
+             assert oldIndex != -1
+                     : "Action model with ID " + entry.id + " should exist in mActionModels.";
+ 
+@@ -444,6 +448,14 @@ class ExtensionsMenuMediator implements Destroyable, ExtensionsMenuBridge.Observ
+     private void openUrlFromMenu(String url) {
+         mOnDismissMenu.run();
+ 
++        if (mOpenUrlInCustomTab != null) {
++            Tab currentTab = mCurrentTabSupplier.get();
++            if (currentTab != null && currentTab.isIncognitoBranded()) {
++                mOpenUrlInCustomTab.onResult(url);
++                return;
++            }
++        }
++
+         LoadUrlParams params = new LoadUrlParams(url, PageTransition.AUTO_TOPLEVEL);
+         mTabCreator.createNewTab(params, TabLaunchType.FROM_CHROME_UI, null);
+     }
+@@ -591,7 +603,7 @@ class ExtensionsMenuMediator implements Destroyable, ExtensionsMenuBridge.Observ
+             // open web store button present in the zero state view.
+             mMainPageModel.set(ExtensionsMenuProperties.DISCOVER_EXTENSIONS_VISIBLE, false);
+         } else {
+-            mMainPageModel.set(ExtensionsMenuProperties.DISCOVER_EXTENSIONS_VISIBLE, true);
++            mMainPageModel.set(ExtensionsMenuProperties.DISCOVER_EXTENSIONS_VISIBLE, false);
+             updateSiteSettingsToggle();
+         }
+     }
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinator.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinator.java
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinator.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinator.java
+@@ -9,6 +9,7 @@ import android.view.KeyEvent;
+ import android.view.ViewGroup;
+ import android.view.ViewStub;
+ 
++import org.chromium.base.Callback;
+ import org.chromium.base.ServiceLoaderUtil;
+ import org.chromium.base.lifetime.Destroyable;
+ import org.chromium.base.supplier.NullableObservableSupplier;
+@@ -59,6 +60,7 @@ public interface ExtensionsToolbarCoordinator extends ChromeAndroidTaskFeature,
+             @Nullable SelectionDropdownMenuDelegate selectionDropdownMenuDelegate,
+             TabModelSelector tabModelSelector,
+             ModalDialogManager modalDialogManager,
++            @Nullable Callback<String> openUrlInCustomTab,
+             @Nullable Runnable onFeatureRemoved) {
+         // Check if the extension UI is enabled first.
+         if (!ExtensionUi.isEnabled(profile)) {
+@@ -84,6 +86,7 @@ public interface ExtensionsToolbarCoordinator extends ChromeAndroidTaskFeature,
+                 selectionDropdownMenuDelegate,
+                 tabModelSelector,
+                 modalDialogManager,
++                openUrlInCustomTab,
+                 onFeatureRemoved);
+         return coordinator;
+     }
+@@ -109,6 +112,7 @@ public interface ExtensionsToolbarCoordinator extends ChromeAndroidTaskFeature,
+             @Nullable SelectionDropdownMenuDelegate selectionDropdownMenuDelegate,
+             TabModelSelector tabModelSelector,
+             ModalDialogManager modalDialogManager,
++            @Nullable Callback<String> openUrlInCustomTab,
+             @Nullable Runnable onFeatureRemoved);
+ 
+     /**
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinatorImpl.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinatorImpl.java
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinatorImpl.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinatorImpl.java
+@@ -8,6 +8,7 @@ import android.animation.Animator;
+ import android.app.Activity;
+ import android.content.ComponentCallbacks;
+ import android.content.Context;
++import android.content.res.ColorStateList;
+ import android.content.res.Configuration;
+ import android.graphics.Rect;
+ import android.os.Handler;
+@@ -20,6 +21,7 @@ import android.widget.LinearLayout;
+ import android.widget.TextView;
+ 
+ import org.chromium.base.CallbackUtils;
++import org.chromium.base.Callback;
+ import org.chromium.base.lifetime.LifetimeAssert;
+ import org.chromium.base.supplier.NullableObservableSupplier;
+ import org.chromium.build.annotations.NullMarked;
+@@ -33,6 +35,8 @@ import org.chromium.chrome.browser.tab.Tab;
+ import org.chromium.chrome.browser.tabmodel.TabCreator;
+ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+ import org.chromium.chrome.browser.theme.ThemeColorProvider;
++import org.chromium.chrome.browser.theme.ThemeUtils;
++import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
+ import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask;
+ import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeature.InitInfo;
+ import org.chromium.chrome.browser.ui.extensions.ExtensionActionsBridge;
+@@ -73,6 +77,8 @@ public class ExtensionsToolbarCoordinatorImpl
+     private ExtensionAccessControlButtonCoordinator mExtensionAccessControlButtonCoordinator;
+     private PropertyModel mToolbarModel;
+     private PropertyModelChangeProcessor mMenuButtonChangeProcessor;
++    private Context mContext;
++    private ThemeColorProvider mThemeColorProvider;
+ 
+     private final MenuButtonWidthConsumer mMenuButtonWidthConsumer = new MenuButtonWidthConsumer();
+     private final RequestAccessButtonWidthConsumer mRequestAccessButtonWidthConsumer =
+@@ -124,17 +130,24 @@ public class ExtensionsToolbarCoordinatorImpl
+             @Nullable SelectionDropdownMenuDelegate selectionDropdownMenuDelegate,
+             TabModelSelector tabModelSelector,
+             ModalDialogManager modalDialogManager,
++            @Nullable Callback<String> openUrlInCustomTab,
+             @Nullable Runnable onFeatureRemoved) {
+-        mBridge = new ExtensionActionsBridge(task, profile);
++        mBridge = ExtensionActionsBridge.Instance();
+         mWindowAndroid = windowAndroid;
++        mContext = context;
++        mThemeColorProvider = themeColorProvider;
+         mProfile = profile;
+         mCurrentTabSupplier = currentTabSupplier;
+         mOnFeatureRemoved = onFeatureRemoved;
+ 
+-        extensionsToolbarStub.setLayoutResource(R.layout.extensions_toolbar_container);
+-        mContainer = (LinearLayout) extensionsToolbarStub.inflate();
++        if (extensionsToolbarStub != null) {
++            extensionsToolbarStub.setLayoutResource(R.layout.extensions_toolbar_container);
++            mContainer = (LinearLayout) extensionsToolbarStub.inflate();
++        } else {
++            mContainer = (LinearLayout) rootView.findViewById(R.id.extensions_toolbar_container);
++        }
+ 
+-        mExtensionsToolbarBridge = new ExtensionsToolbarBridge(task, profile);
++        mExtensionsToolbarBridge = ExtensionsToolbarBridge.Instance();
+         mExtensionsToolbarBridge.addObserver(mExtensionsToolbarBridgeObserver);
+ 
+         mPrefService = UserPrefs.get(profile);
+@@ -173,7 +186,8 @@ public class ExtensionsToolbarCoordinatorImpl
+                         tabCreator,
+                         mExtensionsToolbarBridge,
+                         mMenuButtonPinningDelegate,
+-                        modalDialogManager);
++                        modalDialogManager,
++                        openUrlInCustomTab);
+ 
+         mExtensionAccessControlButtonCoordinator =
+                 new ExtensionAccessControlButtonCoordinator(
+@@ -250,8 +264,6 @@ public class ExtensionsToolbarCoordinatorImpl
+         mExtensionAccessControlButtonCoordinator.destroy();
+         mExtensionsMenuCoordinator.destroy();
+         mExtensionActionListCoordinator.destroy();
+-        mExtensionsToolbarBridge.destroy();
+-        mBridge.destroy();
+         mCurrentTabSupplier = null;
+ 
+         LifetimeAssert.setSafeToGc(mLifetimeAssert, true);
+@@ -304,6 +316,8 @@ public class ExtensionsToolbarCoordinatorImpl
+         mToolbarModel.set(
+                 ExtensionsToolbarProperties.EXTENSIONS_MENU_BUTTON_DEFAULT_BACKGROUND,
+                 backgroundResource);
++        mExtensionsMenuCoordinator.onTintChanged(
++            /*tintList*/ null, mThemeColorProvider.getTint(), BrandedColorScheme.APP_DEFAULT);
+     }
+ 
+     @Override
+@@ -457,6 +471,8 @@ public class ExtensionsToolbarCoordinatorImpl
+             mExtensionsMenuCoordinator.setMenuButtonPinned(isMenuButtonPinned());
+         }
+ 
++        updateMenuIconVisibility();
++
+         // Trigger layout and wait for the toolbar to provide us with width allocation.
+         ViewUtils.requestLayout(
+                 mContainer, "ExtensionsToolbarCoordinatorImpl.updateMenuButtonPinState()");
+@@ -478,9 +494,7 @@ public class ExtensionsToolbarCoordinatorImpl
+     }
+ 
+     private boolean shouldShowMenuIcon() {
+-        return mExtensionsMenuCoordinator.isExtensionsMenuOpen()
+-                || mShowExtensionsMenuPending
+-                || (mCanShowMenuIcon && isMenuButtonPinned());
++        return isMenuButtonPinned();
+     }
+ 
+     public class MenuButtonPinningDelegate {
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/ToolbarPhone.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/ToolbarPhone.java
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/ToolbarPhone.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/ToolbarPhone.java
+@@ -68,6 +68,7 @@ import org.chromium.build.annotations.Nullable;
+ import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
+ import org.chromium.chrome.browser.flags.ChromeFeatureList;
+ import org.chromium.chrome.browser.flags.cromite.sTabSwitcherListMode;
++import org.chromium.chrome.browser.layouts.toolbar.ToolbarWidthConsumer;
+ import org.chromium.chrome.browser.ntp.NewTabPageUtils;
+ import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
+ import org.chromium.chrome.browser.omnibox.LocationBar;
+@@ -88,6 +89,7 @@ import org.chromium.chrome.browser.toolbar.ToolbarDataProvider;
+ import org.chromium.chrome.browser.toolbar.ToolbarProgressBar;
+ import org.chromium.chrome.browser.toolbar.ToolbarTabController;
+ import org.chromium.chrome.browser.toolbar.ToolbarVariationUtils;
++import org.chromium.chrome.browser.toolbar.extensions.ExtensionsToolbarCoordinator;
+ import org.chromium.chrome.browser.toolbar.back_button.BackButtonCoordinator;
+ import org.chromium.chrome.browser.toolbar.forward_button.ForwardButtonCoordinator;
+ import org.chromium.chrome.browser.toolbar.home_button.HomeButtonCoordinator;
+@@ -318,6 +320,8 @@ public class ToolbarPhone extends ToolbarLayout
+ 
+     private boolean mDropdownListScrolled;
+ 
++    private @Nullable ExtensionsToolbarCoordinator mExtensionsToolbarCoordinator;
++
+     // If we're in a layout transition, between startHiding to doneShowing.
+     private boolean mInLayoutTransition;
+ 
+@@ -521,6 +525,17 @@ public class ToolbarPhone extends ToolbarLayout
+         }
+     }
+ 
++    @Override
++    public void setExtensionsToolbarCoordinator(
++            ExtensionsToolbarCoordinator extensionsToolbarCoordinator) {
++        mExtensionsToolbarCoordinator = extensionsToolbarCoordinator;
++        if (mExtensionsToolbarCoordinator != null) {
++            ToolbarWidthConsumer button = mExtensionsToolbarCoordinator.getMenuButtonWidthConsumer();
++            if (button != null) button.updateVisibility(99999);
++        }
++        updateRippleBackground();
++    }
++
+     @Override
+     public void destroy() {
+         cancelAnimations();
+@@ -2990,6 +3005,10 @@ public class ToolbarPhone extends ToolbarLayout
+         mHomeButton.setBackgroundResource(toolbarIconRippleId);
+         getMenuButtonCoordinator().updateButtonBackground(toolbarIconRippleId);
+         mLocationBar.updateButtonBackground(omniboxIconRippleId);
++        if (mExtensionsToolbarCoordinator != null) {
++            mExtensionsToolbarCoordinator.updateMenuButtonBackground(
++                ToolbarUtils.getToolbarIconRippleId(isIncognitoBranded()));
++        }
+     }
+ 
+     private static boolean isVisualStateValidForBrandColorTransition(@VisualState int state) {
+diff --git a/chrome/browser/ui/browser_window/internal/android/java/src/org/chromium/chrome/browser/ui/browser_window/ChromeAndroidTaskImpl.java b/chrome/browser/ui/browser_window/internal/android/java/src/org/chromium/chrome/browser/ui/browser_window/ChromeAndroidTaskImpl.java
+--- a/chrome/browser/ui/browser_window/internal/android/java/src/org/chromium/chrome/browser/ui/browser_window/ChromeAndroidTaskImpl.java
++++ b/chrome/browser/ui/browser_window/internal/android/java/src/org/chromium/chrome/browser/ui/browser_window/ChromeAndroidTaskImpl.java
+@@ -460,6 +460,14 @@ final class ChromeAndroidTaskImpl
+             mChromeAndroidTaskImpl.mAndroidBrowserWindowObserverNotifier.updateActiveBrowserWindow(
+                     mChromeAndroidTaskImpl.getActiveBrowserWindow());
+         }
++
++        @Override
++        public void didDestroyed() {
++            var incognitoModel =
++                    mInternalActivityScopedObjects.mActivityScopedObjects.mTabModelSelector
++                            .getModel(/* incognito= */ true);
++            mChromeAndroidTaskImpl.removeAllFeaturesForTabModel(incognitoModel);
++        }
+     }
+ 
+     private @Nullable Integer mId;
+@@ -769,7 +777,7 @@ final class ChromeAndroidTaskImpl
+                         ? null
+                         : topActivityScopedObjects.mTabModelSelector;
+         if (tabModelSelector != null) {
+-            feature.onTabModelSelected(tabModelSelector.getCurrentModel());
++            feature.onTabModelSelected(this, tabModelSelector.getCurrentModel());
+         }
+ 
+         return feature;
+@@ -1212,6 +1220,14 @@ final class ChromeAndroidTaskImpl
+         for (var feature : mFeatures.values()) {
+             feature.onTaskFocusChanged(isTopResumedActivity);
+         }
++        if (isTopResumedActivity) {
++            var internalActivityScopedObjects = mActivityScopedObjectsDeque.peekFirst();
++            var topActivityScopedObjects = internalActivityScopedObjects.mActivityScopedObjects;
++            TabModelSelector tabModelSelector = topActivityScopedObjects.mTabModelSelector;
++            for (var feature : mFeatures.values()) {
++                feature.onTabModelSelected(this, tabModelSelector.getCurrentModel());
++            }
++        }
+ 
+         mAndroidBrowserWindowObserverNotifier.updateActiveBrowserWindow(getActiveBrowserWindow());
+     }
+@@ -1636,29 +1652,31 @@ final class ChromeAndroidTaskImpl
+     }
+ 
+     private void removeAllFeaturesForActivityInternal(ActivityWindowAndroid activityWindowAndroid) {
++        List<ChromeAndroidTaskFeatureKey> keysToRemove = new ArrayList<>();
+         Iterator<Entry<ChromeAndroidTaskFeatureKey, ChromeAndroidTaskFeature>> iterator =
+                 mFeatures.entrySet().iterator();
+         while (iterator.hasNext()) {
+             Entry<ChromeAndroidTaskFeatureKey, ChromeAndroidTaskFeature> entry = iterator.next();
+             ChromeAndroidTaskFeatureKey key = entry.getKey();
+             if (activityWindowAndroid == key.mActivityWindowAndroid) {
+-                entry.getValue().onFeatureRemoved();
+-                iterator.remove();
++                keysToRemove.add(key);
+             }
+         }
++        removeByKey(keysToRemove);
+     }
+ 
+     private void removeAllFeaturesForTabModel(TabModel tabModel) {
++        List<ChromeAndroidTaskFeatureKey> keysToRemove = new ArrayList<>();
+         Iterator<Entry<ChromeAndroidTaskFeatureKey, ChromeAndroidTaskFeature>> iterator =
+                 mFeatures.entrySet().iterator();
+         while (iterator.hasNext()) {
+             Entry<ChromeAndroidTaskFeatureKey, ChromeAndroidTaskFeature> entry = iterator.next();
+             ChromeAndroidTaskFeatureKey key = entry.getKey();
+             if (tabModel == key.mTabModel) {
+-                entry.getValue().onFeatureRemoved();
+-                iterator.remove();
++                keysToRemove.add(key);
+             }
+         }
++        removeByKey(keysToRemove);
+     }
+ 
+     private void removeAllActivityScopedObjects() {
+@@ -1701,24 +1719,39 @@ final class ChromeAndroidTaskImpl
+     }
+ 
+     private void removeAllFeatures() {
+-        for (var feature : mFeatures.values()) {
+-            feature.onFeatureRemoved();
++        List<ChromeAndroidTaskFeatureKey> keysToRemove = new ArrayList<>();
++        for (var key : mFeatures.keySet()) {
++            keysToRemove.add(key);
+         }
++        removeByKey(keysToRemove);
+         mFeatures.clear();
+     }
+ 
+     private void removeAllFeaturesForProfile(Profile profile) {
++        List<ChromeAndroidTaskFeatureKey> keysToRemove = new ArrayList<>();
+         var iterator = mFeatures.entrySet().iterator();
+         while (iterator.hasNext()) {
+             var entry = iterator.next();
+             ChromeAndroidTaskFeatureKey key = entry.getKey();
+             if (profile.equals(key.mProfile)) {
+-                entry.getValue().onFeatureRemoved();
+-                iterator.remove();
++                keysToRemove.add(key);
++            }
++        }
++        removeByKey(keysToRemove);
++    }
++
++    private void removeByKey(List<ChromeAndroidTaskFeatureKey> keysToRemove) {
++        keysToRemove.sort((k1, k2) -> Integer.compare(k1.mDestructionOrder, k2.mDestructionOrder));
++        for (ChromeAndroidTaskFeatureKey key : keysToRemove) {
++            ChromeAndroidTaskFeature feature = mFeatures.get(key);
++            if (feature != null) {
++                feature.onFeatureRemoved();
++                mFeatures.remove(key);
+             }
+         }
+     }
+ 
++
+     private void assertAlive() {
+         assert mState == State.IDLE || mState == State.PENDING_UPDATE : "This Task is not alive.";
+     }
+@@ -1869,7 +1902,7 @@ final class ChromeAndroidTaskImpl
+ 
+     private void onTabModelSelected(TabModel tabModel) {
+         for (var feature : mFeatures.values()) {
+-            feature.onTabModelSelected(tabModel);
++            feature.onTabModelSelected(this, tabModel);
+         }
+         mAndroidBrowserWindowObserverNotifier.updateActiveBrowserWindow(getActiveBrowserWindow());
+     }
+diff --git a/chrome/browser/ui/browser_window/public/android/java/src/org/chromium/chrome/browser/ui/browser_window/ChromeAndroidTaskFeature.java b/chrome/browser/ui/browser_window/public/android/java/src/org/chromium/chrome/browser/ui/browser_window/ChromeAndroidTaskFeature.java
+--- a/chrome/browser/ui/browser_window/public/android/java/src/org/chromium/chrome/browser/ui/browser_window/ChromeAndroidTaskFeature.java
++++ b/chrome/browser/ui/browser_window/public/android/java/src/org/chromium/chrome/browser/ui/browser_window/ChromeAndroidTaskFeature.java
+@@ -121,5 +121,5 @@ public interface ChromeAndroidTaskFeature {
+      *
+      * @param tabModel The selected {@link TabModel}.
+      */
+-    default void onTabModelSelected(TabModel tabModel) {}
++    default void onTabModelSelected(ChromeAndroidTask task, TabModel tabModel) {}
+ }
+diff --git a/chrome/browser/ui/browser_window/public/android/java/src/org/chromium/chrome/browser/ui/browser_window/ChromeAndroidTaskFeatureKey.java b/chrome/browser/ui/browser_window/public/android/java/src/org/chromium/chrome/browser/ui/browser_window/ChromeAndroidTaskFeatureKey.java
+--- a/chrome/browser/ui/browser_window/public/android/java/src/org/chromium/chrome/browser/ui/browser_window/ChromeAndroidTaskFeatureKey.java
++++ b/chrome/browser/ui/browser_window/public/android/java/src/org/chromium/chrome/browser/ui/browser_window/ChromeAndroidTaskFeatureKey.java
+@@ -54,6 +54,8 @@ public final class ChromeAndroidTaskFeatureKey {
+      */
+     public final @Nullable TabModel mTabModel;
+ 
++    public final Integer mDestructionOrder;
++
+     /**
+      * Creates a new {@link ChromeAndroidTaskFeatureKey}.
+      *
+@@ -62,8 +64,8 @@ public final class ChromeAndroidTaskFeatureKey {
+      *     associated with a profile.
+      */
+     public ChromeAndroidTaskFeatureKey(
+-            Class<? extends ChromeAndroidTaskFeature> featureClass, @Nullable Profile profile) {
+-        this(featureClass, profile, /* activityWindowAndroid= */ null);
++            Class<? extends ChromeAndroidTaskFeature> featureClass, @Nullable Profile profile, Integer destructionOrder) {
++        this(featureClass, profile, /* activityWindowAndroid= */ null, destructionOrder);
+     }
+ 
+     /**
+@@ -78,8 +80,9 @@ public final class ChromeAndroidTaskFeatureKey {
+     public ChromeAndroidTaskFeatureKey(
+             Class<? extends ChromeAndroidTaskFeature> featureClass,
+             @Nullable Profile profile,
+-            @Nullable ActivityWindowAndroid activityWindowAndroid) {
+-        this(featureClass, profile, activityWindowAndroid, /* tabModel= */ null);
++            @Nullable ActivityWindowAndroid activityWindowAndroid,
++            Integer destructionOrder) {
++        this(featureClass, profile, activityWindowAndroid, /* tabModel= */ null, destructionOrder);
+     }
+ 
+     /**
+@@ -97,11 +100,13 @@ public final class ChromeAndroidTaskFeatureKey {
+             Class<? extends ChromeAndroidTaskFeature> featureClass,
+             @Nullable Profile profile,
+             @Nullable ActivityWindowAndroid activityWindowAndroid,
+-            @Nullable TabModel tabModel) {
++            @Nullable TabModel tabModel,
++            Integer destructionOrder) {
+         mFeatureClass = featureClass;
+         mProfile = profile;
+         mActivityWindowAndroid = activityWindowAndroid;
+         mTabModel = tabModel;
++        mDestructionOrder = destructionOrder;
+     }
+ 
+     @Override
+diff --git a/chrome/browser/ui/extensions/extensions_menu_view_model.cc b/chrome/browser/ui/extensions/extensions_menu_view_model.cc
+--- a/chrome/browser/ui/extensions/extensions_menu_view_model.cc
++++ b/chrome/browser/ui/extensions/extensions_menu_view_model.cc
+@@ -971,6 +971,7 @@ ExtensionsMenuViewModel::GetMenuEntryState(
+   content::WebContents* web_contents = GetActiveWebContents();
+ 
+   MenuEntryState entry_state;
++  if (!web_contents) return entry_state;
+   entry_state.extension_id = extension_id;
+   entry_state.action_button =
+       GetActionButtonState(extension_id, action_icon_size);
+@@ -1472,5 +1473,9 @@ content::WebContents* ExtensionsMenuViewModel::GetActiveWebContents() {
+     return nullptr;
+   }
+   auto* tab = tab_list->GetActiveTab();
+-  return tab ? tab->GetContents() : nullptr;
++  auto* web_contents = tab ? tab->GetContents() : nullptr;
++  if (!web_contents || web_contents->IsBeingDestroyed()) {
++    return nullptr;
++  }
++  return web_contents;
+ }
+diff --git a/chrome/browser/ui/extensions/extensions_menu_view_model.h b/chrome/browser/ui/extensions/extensions_menu_view_model.h
+--- a/chrome/browser/ui/extensions/extensions_menu_view_model.h
++++ b/chrome/browser/ui/extensions/extensions_menu_view_model.h
+@@ -205,7 +205,7 @@ class ExtensionsMenuViewModel : public extensions::PermissionsManager::Observer,
+     std::u16string label;
+     // Whether to show a tooltip explaining why the setting is in its current
+     // state (e.g. if controlled by enterprise policy).
+-    bool has_tooltip;
++    bool has_tooltip = false;
+     // The state of the site settings toggle.
+     ControlState toggle;
+   };
+@@ -230,7 +230,7 @@ class ExtensionsMenuViewModel : public extensions::PermissionsManager::Observer,
+     // The state for the site permissions button.
+     ControlState site_permissions_button;
+     // Whether the extension is installed from an enterprise policy.
+-    bool is_enterprise;
++    bool is_enterprise = false;
+     // The origin that was active when this state was computed.
+     url::Origin origin;
+   };
+@@ -331,6 +331,8 @@ class ExtensionsMenuViewModel : public extensions::PermissionsManager::Observer,
+     return action_models_;
+   }
+ 
++  void DestroyActionModels() { action_models_.clear(); }
++
+   // Returns the id's of the extensions that have valid host access requests for
+   // the current site.
+   const std::vector<extensions::ExtensionId>& host_access_requests() {
+diff --git a/chrome/browser/ui/side_panel/internal/android/java/src/org/chromium/chrome/browser/ui/side_panel/SidePanelContainerCoordinatorImpl.java b/chrome/browser/ui/side_panel/internal/android/java/src/org/chromium/chrome/browser/ui/side_panel/SidePanelContainerCoordinatorImpl.java
+--- a/chrome/browser/ui/side_panel/internal/android/java/src/org/chromium/chrome/browser/ui/side_panel/SidePanelContainerCoordinatorImpl.java
++++ b/chrome/browser/ui/side_panel/internal/android/java/src/org/chromium/chrome/browser/ui/side_panel/SidePanelContainerCoordinatorImpl.java
+@@ -141,7 +141,7 @@ final class SidePanelContainerCoordinatorImpl
+         // BrowserWindowInterfaces, one for each tab model's profile.
+         chromeAndroidTask.addFeature(
+                 new ChromeAndroidTaskFeatureKey(
+-                        WindowScopedSidePanelRegistryBridge.class, profile, windowAndroid),
++                        WindowScopedSidePanelRegistryBridge.class, profile, windowAndroid, /*destructionOrder*/ 10),
+                 WindowScopedSidePanelRegistryBridge::new);
+         mSidePanelCoordinatorAndroidBridge =
+                 (SidePanelCoordinatorAndroidBridge)
+@@ -149,7 +149,7 @@ final class SidePanelContainerCoordinatorImpl
+                                 new ChromeAndroidTaskFeatureKey(
+                                         SidePanelCoordinatorAndroidBridge.class,
+                                         profile,
+-                                        windowAndroid),
++                                        windowAndroid, /*destructionOrder*/ 10),
+                                 () -> new SidePanelCoordinatorAndroidBridge(this));
+         assert mSidePanelCoordinatorAndroidBridge != null;
+         mSidePanelCoordinatorAndroidBridge.init();
+diff --git a/chrome/browser/ui/side_panel/internal/android/java/src/org/chromium/chrome/browser/ui/side_panel/dev/SidePanelDevFeatureFactory.java b/chrome/browser/ui/side_panel/internal/android/java/src/org/chromium/chrome/browser/ui/side_panel/dev/SidePanelDevFeatureFactory.java
+--- a/chrome/browser/ui/side_panel/internal/android/java/src/org/chromium/chrome/browser/ui/side_panel/dev/SidePanelDevFeatureFactory.java
++++ b/chrome/browser/ui/side_panel/internal/android/java/src/org/chromium/chrome/browser/ui/side_panel/dev/SidePanelDevFeatureFactory.java
+@@ -33,7 +33,7 @@ public final class SidePanelDevFeatureFactory {
+                             new ChromeAndroidTaskFeatureKey(
+                                     SidePanelWindowScopedDevFeatureImpl.class,
+                                     profile,
+-                                    windowAndroid),
++                                    windowAndroid, /*destructionOrder*/ 10),
+                             () -> new SidePanelWindowScopedDevFeatureImpl(profile, windowAndroid));
+         }
+ 
+diff --git a/components/tabs/impl/tab_collection.cc b/components/tabs/impl/tab_collection.cc
+--- a/components/tabs/impl/tab_collection.cc
++++ b/components/tabs/impl/tab_collection.cc
+@@ -18,6 +18,10 @@
+ #include "components/tabs/public/tab_collection_types.h"
+ #include "components/tabs/public/tab_interface.h"
+ 
++#if BUILDFLAG(IS_ANDROID)
++#include "chrome/browser/ui/android/tab_model/tab_model_list.h"
++#endif
++
+ namespace tabs {
+ 
+ DEFINE_HANDLE_FACTORY(TabCollection);
+@@ -195,6 +199,21 @@ TabCollection::TabCollection(Type type,
+ 
+ TabCollection::~TabCollection() {
+   DispatchPendingNotifications();
++
++#if BUILDFLAG(IS_ANDROID)
++  TabModelList::FinishingTabClosure();
++#endif
++  auto& childrens = GetChildren();
++  for (auto it = childrens.begin(); it != childrens.end(); ) {
++    auto& child = *it;
++    if (std::holds_alternative<std::unique_ptr<TabCollection>>(child)) {
++      TabCollection* collection =
++          std::get<std::unique_ptr<TabCollection>>(child).get();
++      auto removed_collection = MaybeRemoveCollection(collection);
++    } else {
++      it++;
++    }
++  }
+ }
+ 
+ void TabCollection::AddObserver(TabCollectionObserver* observer) const {
+diff --git a/components/tabs/impl/tab_strip_collection.cc b/components/tabs/impl/tab_strip_collection.cc
+--- a/components/tabs/impl/tab_strip_collection.cc
++++ b/components/tabs/impl/tab_strip_collection.cc
+@@ -332,13 +332,13 @@ ScopedTab TabStripCollection::RemoveTabAtIndexRecursive(size_t index) {
+ 
+ ScopedTab TabStripCollection::MaybeRemoveTab(TabInterface* tab) {
+   CHECK(tab);
+-  return nullptr;
++  return RemoveTabImpl(tab);
+ }
+ 
+ std::unique_ptr<TabCollection> TabStripCollection::MaybeRemoveCollection(
+     TabCollection* collection) {
+   CHECK(collection);
+-  return nullptr;
++  return TabStripCollection::RemoveTabCollection(collection);
+ }
+ 
+ void TabStripCollection::InsertTabCollectionAt(
+diff --git a/ui/android/java/src/org/chromium/ui/listmenu/ListMenuHost.java b/ui/android/java/src/org/chromium/ui/listmenu/ListMenuHost.java
+--- a/ui/android/java/src/org/chromium/ui/listmenu/ListMenuHost.java
++++ b/ui/android/java/src/org/chromium/ui/listmenu/ListMenuHost.java
+@@ -44,6 +44,7 @@ public class ListMenuHost
+     /** A listener that is notified when the popup menu is shown or dismissed. */
+     @FunctionalInterface
+     public interface PopupMenuShownListener {
++        default void onPreparePopupMenuShow(AnchoredPopupWindow popupMenu) {}
+         void onPopupMenuShown();
+ 
+         default void onPopupMenuDismissed() {}
+@@ -195,6 +196,9 @@ public class ListMenuHost
+         FlyoutController<AnchoredPopupWindow> controller =
+                 getHierarchicalMenuControllerInternal().getFlyoutController();
+         assert controller != null;
++        for (var l : mPopupListeners) {
++            l.onPreparePopupMenuShow(controller.getMainPopup());
++        }
+         controller.getMainPopup().show();
+ 
+         if (mPressedStateSetter != null) {
+diff --git a/ui/android/java/src/org/chromium/ui/widget/AnchoredPopupWindow.java b/ui/android/java/src/org/chromium/ui/widget/AnchoredPopupWindow.java
+--- a/ui/android/java/src/org/chromium/ui/widget/AnchoredPopupWindow.java
++++ b/ui/android/java/src/org/chromium/ui/widget/AnchoredPopupWindow.java
+@@ -1118,8 +1118,15 @@ public class AnchoredPopupWindow implements OnTouchListener, RectProvider.Observ
+         updatePopupLayout();
+     }
+ 
++    private boolean mDisableDismissOnRectHidden;
++
++    public void disableDismissOnRectHidden() {
++        mDisableDismissOnRectHidden = true;
++    }
++
+     @Override
+     public void onRectHidden() {
++        if (mDisableDismissOnRectHidden) return;
+         dismiss();
+     }
+ 
+--

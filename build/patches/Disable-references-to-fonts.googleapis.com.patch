@@ -1,0 +1,200 @@
+From: csagan5 <32685696+csagan5@users.noreply.github.com>
+Date: Sun, 15 Oct 2017 21:45:46 +0200
+Subject: Disable references to fonts.googleapis.com
+
+License: GPL-3.0-only - https://spdx.org/licenses/GPL-3.0-only.html
+---
+ chrome/android/java/res/font/reader_mode_lexend.xml       | 1 -
+ chrome/android/java/res_base/font/chrome_google_sans.xml  | 8 +-------
+ .../java/res_base/font/chrome_google_sans_bold.xml        | 8 +-------
+ .../java/res_base/font/chrome_google_sans_medium.xml      | 8 +-------
+ .../java/res_base/font/chrome_google_sans_text.xml        | 8 +-------
+ .../java/res_base/font/chrome_google_sans_text_medium.xml | 8 +-------
+ .../org/chromium/chrome/browser/fonts/FontPreloader.java  | 1 +
+ .../side_panel/read_anything/app/read_anything_toolbar.ts | 4 +---
+ .../content/browser/dom_distiller_viewer_source.cc        | 2 +-
+ .../dom_distiller/core/html/dom_distiller_viewer.html     | 4 ----
+ components/dom_distiller/core/html/preview.html           | 2 +-
+ .../content/browser/font/AndroidFontLookupImpl.java       | 1 +
+ .../crashpad/crashpad/doc/support/crashpad_doxygen.css    | 3 +--
+ 13 files changed, 11 insertions(+), 47 deletions(-)
+
+diff --git a/chrome/android/java/res/font/reader_mode_lexend.xml b/chrome/android/java/res/font/reader_mode_lexend.xml
+--- a/chrome/android/java/res/font/reader_mode_lexend.xml
++++ b/chrome/android/java/res/font/reader_mode_lexend.xml
+@@ -12,6 +12,5 @@ found in the LICENSE file.
+     app:fontProviderAuthority="com.google.android.gms.fonts"
+     app:fontProviderCerts="@array/ui_com_google_android_gms_fonts_certs"
+     app:fontProviderFetchStrategy="async"
+-    app:fontProviderPackage="com.google.android.gms"
+     app:fontProviderQuery="Lexend"
+     app:fontProviderSystemFontFamily="sans-serif"/>
+diff --git a/chrome/android/java/res_base/font/chrome_google_sans.xml b/chrome/android/java/res_base/font/chrome_google_sans.xml
+--- a/chrome/android/java/res_base/font/chrome_google_sans.xml
++++ b/chrome/android/java/res_base/font/chrome_google_sans.xml
+@@ -8,10 +8,4 @@ found in the LICENSE file.
+ <font-family
+     xmlns:app="http://schemas.android.com/apk/res-auto"
+     xmlns:tools="http://schemas.android.com/tools"
+-    tools:ignore="FontValidationError,FontValidationWarning,UnusedResources"
+-    app:fontProviderAuthority="com.google.android.gms.fonts"
+-    app:fontProviderCerts="@array/ui_com_google_android_gms_fonts_certs"
+-    app:fontProviderFetchStrategy="async"
+-    app:fontProviderPackage="com.google.android.gms"
+-    app:fontProviderQuery="Google Sans"
+-    app:fontProviderSystemFontFamily="google-sans"/>
++    tools:ignore="FontValidationError,FontValidationWarning,UnusedResources"/>
+diff --git a/chrome/android/java/res_base/font/chrome_google_sans_bold.xml b/chrome/android/java/res_base/font/chrome_google_sans_bold.xml
+--- a/chrome/android/java/res_base/font/chrome_google_sans_bold.xml
++++ b/chrome/android/java/res_base/font/chrome_google_sans_bold.xml
+@@ -8,10 +8,4 @@ found in the LICENSE file.
+ <font-family
+     xmlns:app="http://schemas.android.com/apk/res-auto"
+     xmlns:tools="http://schemas.android.com/tools"
+-    tools:ignore="FontValidationError,FontValidationWarning,UnusedResources"
+-    app:fontProviderAuthority="com.google.android.gms.fonts"
+-    app:fontProviderCerts="@array/ui_com_google_android_gms_fonts_certs"
+-    app:fontProviderFetchStrategy="async"
+-    app:fontProviderPackage="com.google.android.gms"
+-    app:fontProviderQuery="Google Sans:700"
+-    app:fontProviderSystemFontFamily="google-sans-bold"/>
++    tools:ignore="FontValidationError,FontValidationWarning,UnusedResources"/>
+diff --git a/chrome/android/java/res_base/font/chrome_google_sans_medium.xml b/chrome/android/java/res_base/font/chrome_google_sans_medium.xml
+--- a/chrome/android/java/res_base/font/chrome_google_sans_medium.xml
++++ b/chrome/android/java/res_base/font/chrome_google_sans_medium.xml
+@@ -8,10 +8,4 @@ found in the LICENSE file.
+ <font-family
+     xmlns:app="http://schemas.android.com/apk/res-auto"
+     xmlns:tools="http://schemas.android.com/tools"
+-    tools:ignore="FontValidationError,FontValidationWarning,UnusedResources"
+-    app:fontProviderAuthority="com.google.android.gms.fonts"
+-    app:fontProviderCerts="@array/ui_com_google_android_gms_fonts_certs"
+-    app:fontProviderFetchStrategy="async"
+-    app:fontProviderPackage="com.google.android.gms"
+-    app:fontProviderQuery="Google Sans:500"
+-    app:fontProviderSystemFontFamily="google-sans-medium"/>
++    tools:ignore="FontValidationError,FontValidationWarning,UnusedResources"/>
+diff --git a/chrome/android/java/res_base/font/chrome_google_sans_text.xml b/chrome/android/java/res_base/font/chrome_google_sans_text.xml
+--- a/chrome/android/java/res_base/font/chrome_google_sans_text.xml
++++ b/chrome/android/java/res_base/font/chrome_google_sans_text.xml
+@@ -8,10 +8,4 @@ found in the LICENSE file.
+ <font-family
+     xmlns:app="http://schemas.android.com/apk/res-auto"
+     xmlns:tools="http://schemas.android.com/tools"
+-    tools:ignore="FontValidationError,FontValidationWarning,UnusedResources"
+-    app:fontProviderAuthority="com.google.android.gms.fonts"
+-    app:fontProviderCerts="@array/ui_com_google_android_gms_fonts_certs"
+-    app:fontProviderFetchStrategy="async"
+-    app:fontProviderPackage="com.google.android.gms"
+-    app:fontProviderQuery="Google Sans Text"
+-    app:fontProviderSystemFontFamily="google-sans-text"/>
+\ No newline at end of file
++    tools:ignore="FontValidationError,FontValidationWarning,UnusedResources"/>
+diff --git a/chrome/android/java/res_base/font/chrome_google_sans_text_medium.xml b/chrome/android/java/res_base/font/chrome_google_sans_text_medium.xml
+--- a/chrome/android/java/res_base/font/chrome_google_sans_text_medium.xml
++++ b/chrome/android/java/res_base/font/chrome_google_sans_text_medium.xml
+@@ -8,10 +8,4 @@ found in the LICENSE file.
+ <font-family
+     xmlns:app="http://schemas.android.com/apk/res-auto"
+     xmlns:tools="http://schemas.android.com/tools"
+-    tools:ignore="FontValidationError,FontValidationWarning,UnusedResources"
+-    app:fontProviderAuthority="com.google.android.gms.fonts"
+-    app:fontProviderCerts="@array/ui_com_google_android_gms_fonts_certs"
+-    app:fontProviderFetchStrategy="async"
+-    app:fontProviderPackage="com.google.android.gms"
+-    app:fontProviderQuery="Google Sans Text:500"
+-    app:fontProviderSystemFontFamily="google-sans-text-medium"/>
+\ No newline at end of file
++    tools:ignore="FontValidationError,FontValidationWarning,UnusedResources"/>
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/fonts/FontPreloader.java b/chrome/android/java/src/org/chromium/chrome/browser/fonts/FontPreloader.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/fonts/FontPreloader.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/fonts/FontPreloader.java
+@@ -64,6 +64,7 @@ public class FontPreloader {
+         mThreadChecker.assertOnValidThread();
+         if (!mInitialized) {
+             mInitialized = true;
++            if ((true)) return;
+             context = context.getApplicationContext();
+             // Create an empty callback so we can call the async version of #getFont.
+             var callback =
+diff --git a/chrome/browser/resources/side_panel/read_anything/app/read_anything_toolbar.ts b/chrome/browser/resources/side_panel/read_anything/app/read_anything_toolbar.ts
+--- a/chrome/browser/resources/side_panel/read_anything/app/read_anything_toolbar.ts
++++ b/chrome/browser/resources/side_panel/read_anything/app/read_anything_toolbar.ts
+@@ -520,9 +520,7 @@ export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
+     const link = document.createElement('link');
+     link.rel = 'preload';
+     link.as = 'style';
+-    link.href = 'https://fonts.googleapis.com/css?family=';
+-    link.href += chrome.readingMode.allFonts.join('|');
+-    link.href = link.href.replace(' ', '+');
++    this.setFontsLoaded();
+ 
+     link.addEventListener('load', () => {
+       link.media = 'all';
+diff --git a/components/dom_distiller/content/browser/dom_distiller_viewer_source.cc b/components/dom_distiller/content/browser/dom_distiller_viewer_source.cc
+--- a/components/dom_distiller/content/browser/dom_distiller_viewer_source.cc
++++ b/components/dom_distiller/content/browser/dom_distiller_viewer_source.cc
+@@ -308,7 +308,7 @@ bool DomDistillerViewerSource::ShouldServiceRequest(
+ std::string DomDistillerViewerSource::GetContentSecurityPolicy(
+     network::mojom::CSPDirectiveName directive) {
+   if (directive == network::mojom::CSPDirectiveName::StyleSrc) {
+-    return "style-src 'self' https://fonts.googleapis.com;";
++    return "style-src 'self';";
+   } else if (directive == network::mojom::CSPDirectiveName::ChildSrc) {
+     return "child-src *;";
+   } else if (directive ==
+diff --git a/components/dom_distiller/core/html/dom_distiller_viewer.html b/components/dom_distiller/core/html/dom_distiller_viewer.html
+--- a/components/dom_distiller/core/html/dom_distiller_viewer.html
++++ b/components/dom_distiller/core/html/dom_distiller_viewer.html
+@@ -17,14 +17,10 @@ found in the LICENSE file.
+   <!-- Placeholder for CSP. -->
+   $1
+   <title>$i18n{title}</title>
+-  <link href="https://fonts.googleapis.com/icon?family=Material+Icons"
+-      rel="stylesheet">
+   <!-- Import web fonts. -->
+   <!-- On iOS, the web fonts block the rendering until the resources are fetched,
+     which can take a long time on slow networks. In Blink, it times out after 3
+     seconds and uses fallback fonts. See crbug.com/711650 -->
+-  <link href="https://fonts.googleapis.com/css2?family=Lexend&family=Roboto&display=block"
+-      rel="stylesheet" type="text/css">
+   <!-- Placeholder for CSS. -->
+   $2
+ </head>
+diff --git a/components/dom_distiller/core/html/preview.html b/components/dom_distiller/core/html/preview.html
+--- a/components/dom_distiller/core/html/preview.html
++++ b/components/dom_distiller/core/html/preview.html
+@@ -11,7 +11,7 @@ found in the LICENSE file.
+   <meta name="theme-color" id="theme-color">
+   <title>Title goes here and it could be kind of lengthy - Publisher name</title>
+   <link href="../css/distilledpage.css" rel="stylesheet" type="text/css">
+-  <link href='https://fonts.googleapis.com/css?family=Roboto' rel='stylesheet' type='text/css'>
++  <link href='chrome://resources/css/roboto.css' rel='stylesheet' type='text/css'>
+   <style>
+     .english :lang(th) {display: none}
+     .english :lang(zh) {display: none}
+diff --git a/content/public/android/java/src/org/chromium/content/browser/font/AndroidFontLookupImpl.java b/content/public/android/java/src/org/chromium/content/browser/font/AndroidFontLookupImpl.java
+--- a/content/public/android/java/src/org/chromium/content/browser/font/AndroidFontLookupImpl.java
++++ b/content/public/android/java/src/org/chromium/content/browser/font/AndroidFontLookupImpl.java
+@@ -208,6 +208,7 @@ public class AndroidFontLookupImpl implements AndroidFontLookup {
+      * @return An opened font file descriptor, or null if the font file is not available.
+      */
+     private @Nullable ParcelFileDescriptor tryFetchFont(String fontUniqueName) {
++        if ((true)) return null;
+         ParcelFileDescriptor cachedFd = mFetchedFontCache.get(fontUniqueName);
+         if (cachedFd != null) {
+             try {
+diff --git a/third_party/crashpad/crashpad/doc/support/crashpad_doxygen.css b/third_party/crashpad/crashpad/doc/support/crashpad_doxygen.css
+--- a/third_party/crashpad/crashpad/doc/support/crashpad_doxygen.css
++++ b/third_party/crashpad/crashpad/doc/support/crashpad_doxygen.css
+@@ -12,8 +12,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License. */
+ 
+-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans:ital,wght@0,100..900;1,100..900&display=swap');
+-@import url('https://fonts.googleapis.com/css2?family=Source+Code+Pro:ital,wght@0,200..900;1,200..900&display=swap');
++@import "chrome://resources/css/roboto.css";
+ 
+ :root {
+   --font-family-normal: 'Noto Sans',
+--

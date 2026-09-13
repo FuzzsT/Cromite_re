@@ -1,0 +1,1430 @@
+From: uazo <uazo@users.noreply.github.com>
+Date: Thu, 16 Feb 2023 15:28:16 +0000
+Subject: Add setting to clear data on exit
+
+License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+---
+ chrome/android/chrome_java_sources.gni        |  1 +
+ .../java/res/xml/privacy_preferences.xml      |  5 ++
+ .../chrome/browser/ChromeTabbedActivity.java  |  7 +-
+ .../ClearBrowsingDataFragment.java            | 36 +++++++--
+ .../ClearBrowsingDataFragmentAtStart.java     | 79 +++++++++++++++++++
+ chrome/app/settings_strings.grdp              |  8 ++
+ chrome/browser/about_flags.cc                 |  1 +
+ .../browsing_data/browsing_data_bridge.cc     | 20 ++++-
+ .../browsing_data_counter_bridge.cc           |  2 +-
+ .../browsing_data/BrowsingDataBridge.java     | 12 +--
+ .../chrome_browsing_data_lifetime_manager.cc  | 22 +++++-
+ .../chrome_browsing_data_remover_delegate.cc  | 11 +++
+ .../api/browsing_data/browsing_data_api.cc    |  2 +-
+ .../api/settings_private/prefs_util.cc        | 17 ++++
+ .../browser/profiles/ProfileManagerUtils.java |  5 ++
+ .../profiles/android/profile_manager_utils.cc |  5 ++
+ chrome/browser/profiles/profile_manager.cc    | 17 +++-
+ chrome/browser/profiles/profile_manager.h     |  2 +
+ .../clear_browsing_data_browser_proxy.ts      |  1 +
+ .../clear_browsing_data_dialog.html           | 26 ++++--
+ .../clear_browsing_data_dialog.ts             | 60 +++++++++++++-
+ .../clear_browsing_data_time_picker.ts        |  6 +-
+ .../settings/privacy_page/privacy_page.html   | 13 ++-
+ .../settings/privacy_page/privacy_page.ts     | 10 +++
+ .../privacy_page/privacy_page_index.ts        |  2 +-
+ chrome/browser/resources/settings/route.ts    |  2 +
+ chrome/browser/resources/settings/router.ts   |  1 +
+ .../strings/android_chrome_strings.grd        |  3 +
+ .../Add-setting-to-clear-data-on-exit.grdp    |  9 +++
+ .../settings_localized_strings_provider.cc    |  4 +
+ .../content/browsing_data_helper.cc           |  9 ++-
+ components/browsing_data/core/BUILD.gn        |  5 ++
+ .../core/browsing_data_policies_utils.cc      | 20 ++---
+ .../core/browsing_data_policies_utils.h       | 11 +++
+ .../browsing_data/core/browsing_data_utils.cc | 33 ++++++++
+ .../browsing_data/core/browsing_data_utils.h  |  2 +
+ .../core/clear_browsing_data_tab.h            | 21 +++++
+ components/browsing_data/core/pref_names.cc   | 17 ++++
+ components/browsing_data/core/pref_names.h    | 16 ++++
+ components/favicon/core/favicon_database.cc   |  9 +++
+ components/favicon/core/favicon_database.h    |  3 +
+ .../search_engines/template_url_service.cc    |  1 +
+ content/browser/btm/btm_service_impl.cc       |  2 +-
+ content/browser/storage_partition_impl.cc     |  2 +
+ .../public/browser/browsing_data_remover.h    |  5 ++
+ .../Add-setting-to-clear-data-on-exit.inc     |  8 ++
+ 46 files changed, 502 insertions(+), 51 deletions(-)
+ create mode 100644 chrome/android/java/src/org/chromium/chrome/browser/browsing_data/ClearBrowsingDataFragmentAtStart.java
+ create mode 100644 chrome/browser/ui/android/strings/cromite_android_chrome_strings_grd/Add-setting-to-clear-data-on-exit.grdp
+ create mode 100644 components/browsing_data/core/clear_browsing_data_tab.h
+ create mode 100644 cromite_flags/chrome/browser/about_flags_cc/Add-setting-to-clear-data-on-exit.inc
+
+diff --git a/chrome/android/chrome_java_sources.gni b/chrome/android/chrome_java_sources.gni
+--- a/chrome/android/chrome_java_sources.gni
++++ b/chrome/android/chrome_java_sources.gni
+@@ -307,6 +307,7 @@ chrome_java_sources = [
+   "java/src/org/chromium/chrome/browser/browsing_data/ClearBrowsingDataExpandablePreferenceCategory.java",
+   "java/src/org/chromium/chrome/browser/browsing_data/ClearBrowsingDataFetcher.java",
+   "java/src/org/chromium/chrome/browser/browsing_data/ClearBrowsingDataFragment.java",
++  "java/src/org/chromium/chrome/browser/browsing_data/ClearBrowsingDataFragmentAtStart.java",
+   "java/src/org/chromium/chrome/browser/browsing_data/ConfirmImportantSitesDialogFragment.java",
+   "java/src/org/chromium/chrome/browser/browsing_data/OtherFormsOfHistoryDialogFragment.java",
+   "java/src/org/chromium/chrome/browser/browsing_data/UrlFilter.java",
+diff --git a/chrome/android/java/res/xml/privacy_preferences.xml b/chrome/android/java/res/xml/privacy_preferences.xml
+--- a/chrome/android/java/res/xml/privacy_preferences.xml
++++ b/chrome/android/java/res/xml/privacy_preferences.xml
+@@ -19,6 +19,11 @@ found in the LICENSE file.
+         android:title="@string/clear_browsing_data_title"
+         android:summary="@string/clear_browsing_data_summary"
+         android:fragment="org.chromium.chrome.browser.browsing_data.ClearBrowsingDataFragment" />
++    <Preference
++        android:key="clear_browsing_data_advanced"
++        android:title="@string/clear_browsing_data_at_start_title"
++        android:summary="@string/clear_browsing_data_at_start_summary"
++        android:fragment="org.chromium.chrome.browser.browsing_data.ClearBrowsingDataFragmentAtStart" />
+     <Preference
+         android:key="privacy_guide"
+         app:isPreferenceVisible="false"
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java b/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+@@ -240,6 +240,7 @@ import org.chromium.chrome.browser.price_change.PriceChangeModuleBuilder;
+ import org.chromium.chrome.browser.profiles.OtrProfileId;
+ import org.chromium.chrome.browser.profiles.Profile;
+ import org.chromium.chrome.browser.profiles.ProfileManager;
++import org.chromium.chrome.browser.profiles.ProfileManagerUtils;
+ import org.chromium.chrome.browser.profiles.ProfileProvider;
+ import org.chromium.chrome.browser.quick_delete.QuickDeleteController;
+ import org.chromium.chrome.browser.quick_delete.QuickDeleteDelegateImpl;
+@@ -2420,7 +2421,11 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
+             }
+             if (!hadCipherData) {
+                 hadCipherData =
+-                        CipherLazyHolder.sCipherInstance.restoreFromBundle(getSavedInstanceState());
++                        CipherLazyHolder.sCipherInstance.restoreFromBundle(getSavedInstanceState()); //
++                if (!hadCipherData) {
++                    Log.i(TAG, "Removing browsing data");
++                    ProfileManagerUtils.removeBrowsingDataAtStart();
++                }
+             }
+ 
+             boolean hasSavedOrPersistentInstanceState =
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/browsing_data/ClearBrowsingDataFragment.java b/chrome/android/java/src/org/chromium/chrome/browser/browsing_data/ClearBrowsingDataFragment.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/browsing_data/ClearBrowsingDataFragment.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/browsing_data/ClearBrowsingDataFragment.java
+@@ -177,6 +177,12 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
+             assert mCheckbox == preference;
+ 
+             mParent.updateButtonState();
++
++            BrowsingDataBridge.getForProfile(mParent.getProfile())
++                    .setBrowsingDataDeletionPreference(
++                            ClearBrowsingDataFragment.getDataType(mOption),
++                            mParent.getClearBrowsingDataTabType(),
++                            mCheckbox.isChecked());
+             return true;
+         }
+ 
+@@ -273,7 +279,7 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
+     private @TimePeriod int mLastSelectedTimePeriod;
+     private boolean mShouldShowPostDeleteFeedback;
+ 
+-    private final SettableMonotonicObservableSupplier<String> mPageTitle =
++    protected final SettableMonotonicObservableSupplier<String> mPageTitle =
+             ObservableSuppliers.createMonotonic();
+ 
+     /**
+@@ -380,7 +386,7 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
+     }
+ 
+     /** Called when browsing data is about to be cleared. */
+-    private void onClearBrowsingData() {
++    protected void onClearBrowsingData() {
+         RecordUserAction.record("ClearBrowsingData_AdvancedTab");
+     }
+ 
+@@ -462,6 +468,7 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
+             BrowsingDataBridge.getForProfile(getProfile())
+                     .setBrowsingDataDeletionPreference(
+                             ClearBrowsingDataFragment.getDataType(item.getOption()),
++                            getClearBrowsingDataTabType(),
+                             item.isSelected());
+         }
+ 
+@@ -469,9 +476,17 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
+                 .setBrowsingDataDeletionTimePeriod(mLastSelectedTimePeriod);
+     }
+ 
++    protected int getClearBrowsingDataTabType() {
++        return ClearBrowsingDataTab.ADVANCED;
++    }
++
+     /** Returns the list of supported {@link DialogOption}. */
+     @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+-    protected static List<Integer> getDialogOptions(Bundle fragmentArgs) {
++    protected List<Integer> getDialogOptions(Bundle fragmentArgs) {
++        return getDialogOptionsStatic(fragmentArgs);
++    }
++
++    private static List<Integer> getDialogOptionsStatic(Bundle fragmentArgs) {
+         String referrer =
+                 fragmentArgs.getString(
+                         ClearBrowsingDataFragment.CLEAR_BROWSING_DATA_REFERRER, null);
+@@ -497,6 +512,10 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
+         return options;
+     }
+ 
++    protected boolean shouldClearBrowsingData() {
++        return true;
++    }
++
+     /**
+      * Decides whether a given dialog option should be selected when the dialog is initialized.
+      *
+@@ -505,7 +524,7 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
+      */
+     private boolean isOptionSelectedByDefault(@DialogOption int option) {
+         return BrowsingDataBridge.getForProfile(getProfile())
+-                .getBrowsingDataDeletionPreference(getDataType(option));
++                .getBrowsingDataDeletionPreference(getDataType(option), getClearBrowsingDataTabType());
+     }
+ 
+     /**
+@@ -573,6 +592,7 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
+      * options.
+      */
+     private void onClearButtonClicked() {
++        if (!shouldClearBrowsingData()) return;
+         if (shouldShowImportantSitesDialog()) {
+             showImportantDialogThenClear();
+             return;
+@@ -679,7 +699,7 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
+                             .getBoolean(Pref.ALLOW_DELETING_BROWSER_HISTORY)) {
+                 enabled = false;
+                 browsingDataBridge.setBrowsingDataDeletionPreference(
+-                        getDataType(DialogOption.CLEAR_HISTORY), false);
++                        getDataType(DialogOption.CLEAR_HISTORY), getClearBrowsingDataTabType(), false);
+             }
+ 
+             // Disable tabs closure if the user is in multi-window mode.
+@@ -711,6 +731,8 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
+ 
+         setHasOptionsMenu(true);
+ 
++        onCustomizePreferences(savedInstanceState, rootKey);
++
+         if (ChromeFeatureList.isEnabled(ChromeFeatureList.DBD_PASSWORD_REMOVAL_ON_ANDROID)) {
+             setUpManageOtherGoogleDataSection();
+         } else {
+@@ -719,6 +741,8 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
+         }
+     }
+ 
++    protected void onCustomizePreferences(Bundle savedInstanceState, String rootKey) {}
++
+     private void setUpManageOtherGoogleDataSection() {
+         mManageOtherGoogleDataSection = findPreference(PREF_MANAGE_OTHER_GOOGLE_DATA_EXPANDABLE);
+         mPasswordManagerLinkOut = findPreference(PREF_PASSWORD_MANAGER_LINK_OUT);
+@@ -1116,7 +1140,7 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
+                 public void updateDynamicPreferences(
+                         Context context, SettingsIndexData indexData, Profile profile) {
+                     Bundle args = createFragmentArgs(context.getClass().getName());
+-                    List<Integer> options = getDialogOptions(args);
++                    List<Integer> options = getDialogOptionsStatic(args);
+                     // Not all checkboxes defined in the layout are necessarily handled by this
+                     // class or a particular subclass. Hide those that are not.
+                     Set<Integer> unboundOptions = getAllOptions();
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/browsing_data/ClearBrowsingDataFragmentAtStart.java b/chrome/android/java/src/org/chromium/chrome/browser/browsing_data/ClearBrowsingDataFragmentAtStart.java
+new file mode 100644
+--- /dev/null
++++ b/chrome/android/java/src/org/chromium/chrome/browser/browsing_data/ClearBrowsingDataFragmentAtStart.java
+@@ -0,0 +1,79 @@
++/*
++    This file is part of Bromite.
++
++    Bromite is free software: you can redistribute it and/or modify
++    it under the terms of the GNU General Public License as published by
++    the Free Software Foundation, either version 3 of the License, or
++    (at your option) any later version.
++
++    Bromite is distributed in the hope that it will be useful,
++    but WITHOUT ANY WARRANTY; without even the implied warranty of
++    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++    GNU General Public License for more details.
++
++    You should have received a copy of the GNU General Public License
++    along with Bromite. If not, see <https://www.gnu.org/licenses/>.
++*/
++
++package org.chromium.chrome.browser.browsing_data;
++
++import android.content.Context;
++import android.os.Bundle;
++import android.view.View;
++
++import androidx.annotation.IntDef;
++import androidx.preference.Preference;
++
++import org.chromium.base.Callback;
++import org.chromium.chrome.R;
++import org.chromium.chrome.browser.profiles.Profile;
++import org.chromium.components.browser_ui.settings.SpinnerPreference;
++
++import java.lang.annotation.Retention;
++import java.lang.annotation.RetentionPolicy;
++import java.util.Arrays;
++import java.util.List;
++
++public class ClearBrowsingDataFragmentAtStart extends ClearBrowsingDataFragment {
++    static final String PREF_TIME_RANGE = "time_period_spinner";
++
++    @Override
++    public void onCreatePreferences(Bundle savedInstanceState, String rootKey) {
++        super.onCreatePreferences(savedInstanceState, rootKey);
++
++        SpinnerPreference spinner = (SpinnerPreference) findPreference(PREF_TIME_RANGE);
++        if (spinner != null) {
++            getPreferenceScreen().removePreference(spinner);
++        }
++    }
++
++    private boolean isHistorySyncEnabled() {
++        return false;
++    }
++
++    @Override
++    protected void onCustomizePreferences(Bundle savedInstanceState, String rootKey) {
++        mPageTitle.set(getString(R.string.clear_browsing_data_at_start_title));
++    }
++
++    @Override
++    protected int getClearBrowsingDataTabType() {
++        return ClearBrowsingDataTab.AT_START;
++    }
++
++    @Override
++    protected List<Integer> getDialogOptions(Bundle fragmentArgs) {
++        return Arrays.asList(DialogOption.CLEAR_HISTORY, DialogOption.CLEAR_COOKIES_AND_SITE_DATA,
++                DialogOption.CLEAR_CACHE, DialogOption.CLEAR_PASSWORDS,
++                DialogOption.CLEAR_FORM_DATA, DialogOption.CLEAR_SITE_SETTINGS);
++    }
++
++    @Override
++    public void onClearBrowsingData() {
++    }
++
++    @Override
++    protected boolean shouldClearBrowsingData() {
++        return false;
++    }
++}
+diff --git a/chrome/app/settings_strings.grdp b/chrome/app/settings_strings.grdp
+--- a/chrome/app/settings_strings.grdp
++++ b/chrome/app/settings_strings.grdp
+@@ -171,6 +171,14 @@
+         Swipe between pages
+       </message>
+     </if>
++   <if expr="is_win or is_linux">
++     <message name="IDS_SETTINGS_CLEAR_BROWSING_DATA_AT_CLOSE" desc="The title of the tab showing the at close clear browsing data options.">
++       Clear browsing data when closing Cromite
++     </message>
++     <message name="IDS_SETTINGS_CLEAR_DATA_AT_CLOSE_DESCRIPTION" desc="Description for delete browsing data button at close in Privacy options. 'History' refers to browsing history. 'Cookies' refers to the technical meaning of a cookie, i.e. data saved by a website on the user's computer, as in when a website saves your preferences.">
++       Choose what to automatically delete when you close Cromite
++     </message>
++   </if>
+     <if expr="is_win or is_linux">
+       <message name="IDS_SETTINGS_OVERSCROLL_HISTORY_NAVIGATION_SUBTITLE" desc="Subtitle for the overscroll history navigation setting, which allows you to navigate back and forward by swiping left or right with a touch device.">
+         Navigate back and forward with a swipe gesture
+diff --git a/chrome/browser/about_flags.cc b/chrome/browser/about_flags.cc
+--- a/chrome/browser/about_flags.cc
++++ b/chrome/browser/about_flags.cc
+@@ -124,6 +124,7 @@
+ #include "components/enterprise/isolated_mode/settings.h"
+ #include "components/enterprise/network_header_injection/core/features.h"
+ #include "components/error_page/common/error_page_switches.h"
++#include "components/favicon/core/favicon_database.h"
+ #include "components/feature_engagement/public/feature_constants.h"
+ #include "components/feature_engagement/public/feature_list.h"
+ #include "components/feed/feed_feature_list.h"
+diff --git a/chrome/browser/android/browsing_data/browsing_data_bridge.cc b/chrome/browser/android/browsing_data/browsing_data_bridge.cc
+--- a/chrome/browser/android/browsing_data/browsing_data_bridge.cc
++++ b/chrome/browser/android/browsing_data/browsing_data_bridge.cc
+@@ -29,6 +29,7 @@
+ #include "components/browsing_data/content/android/browsing_data_model_android.h"
+ #include "components/browsing_data/content/browsing_data_model.h"
+ #include "components/browsing_data/core/browsing_data_utils.h"
++#include "components/browsing_data/core/clear_browsing_data_tab.h"
+ #include "components/browsing_data/core/history_notice_utils.h"
+ #include "components/browsing_data/core/pref_names.h"
+ #include "components/prefs/pref_service.h"
+@@ -64,6 +65,15 @@ PrefService* GetPrefService(Profile* profile) {
+   return profile->GetOriginalProfile()->GetPrefs();
+ }
+ 
++browsing_data::ClearBrowsingDataTab ToTabEnum(jint clear_browsing_data_tab) {
++  DCHECK_GE(clear_browsing_data_tab, 0);
++  DCHECK_LE(clear_browsing_data_tab,
++            static_cast<int>(browsing_data::ClearBrowsingDataTab::MAX_VALUE));
++
++  return static_cast<browsing_data::ClearBrowsingDataTab>(
++      clear_browsing_data_tab);
++}
++
+ void OnBrowsingDataModelBuilt(JNIEnv* env,
+                               const ScopedJavaGlobalRef<jobject>& java_callback,
+                               std::unique_ptr<BrowsingDataModel> model) {
+@@ -213,7 +223,8 @@ static void JNI_BrowsingDataBridge_MarkOriginAsImportantForTesting(
+ static bool JNI_BrowsingDataBridge_GetBrowsingDataDeletionPreference(
+     JNIEnv* env,
+     Profile* profile,
+-    int32_t data_type) {
++    int32_t data_type,
++    jint clear_browsing_data_tab) {
+   DCHECK_GE(data_type, 0);
+   DCHECK_LE(data_type,
+             static_cast<int>(browsing_data::BrowsingDataType::MAX_VALUE));
+@@ -224,7 +235,8 @@ static bool JNI_BrowsingDataBridge_GetBrowsingDataDeletionPreference(
+   // data types for consistency.
+   std::string pref;
+   if (!browsing_data::GetDeletionPreferenceFromDataType(
+-          static_cast<browsing_data::BrowsingDataType>(data_type), &pref)) {
++          static_cast<browsing_data::BrowsingDataType>(data_type),
++          ToTabEnum(clear_browsing_data_tab), &pref)) {
+     return false;
+   }
+ 
+@@ -235,6 +247,7 @@ static void JNI_BrowsingDataBridge_SetBrowsingDataDeletionPreference(
+     JNIEnv* env,
+     Profile* profile,
+     int32_t data_type,
++    jint clear_browsing_data_tab,
+     bool value) {
+   DCHECK_GE(data_type, 0);
+   DCHECK_LE(data_type,
+@@ -242,7 +255,8 @@ static void JNI_BrowsingDataBridge_SetBrowsingDataDeletionPreference(
+ 
+   std::string pref;
+   if (!browsing_data::GetDeletionPreferenceFromDataType(
+-          static_cast<browsing_data::BrowsingDataType>(data_type), &pref)) {
++          static_cast<browsing_data::BrowsingDataType>(data_type),
++          ToTabEnum(clear_browsing_data_tab), &pref)) {
+     return;
+   }
+ 
+diff --git a/chrome/browser/android/browsing_data/browsing_data_counter_bridge.cc b/chrome/browser/android/browsing_data/browsing_data_counter_bridge.cc
+--- a/chrome/browser/android/browsing_data/browsing_data_counter_bridge.cc
++++ b/chrome/browser/android/browsing_data/browsing_data_counter_bridge.cc
+@@ -34,7 +34,7 @@ BrowsingDataCounterBridge::BrowsingDataCounterBridge(
+ 
+   std::string pref;
+   if (!browsing_data::GetDeletionPreferenceFromDataType(
+-          static_cast<browsing_data::BrowsingDataType>(data_type), &pref)) {
++          static_cast<browsing_data::BrowsingDataType>(data_type), browsing_data::ClearBrowsingDataTab::AT_START, &pref)) {
+     return;
+   }
+ 
+diff --git a/chrome/browser/browsing_data/android/java/src/org/chromium/chrome/browser/browsing_data/BrowsingDataBridge.java b/chrome/browser/browsing_data/android/java/src/org/chromium/chrome/browser/browsing_data/BrowsingDataBridge.java
+--- a/chrome/browser/browsing_data/android/java/src/org/chromium/chrome/browser/browsing_data/BrowsingDataBridge.java
++++ b/chrome/browser/browsing_data/android/java/src/org/chromium/chrome/browser/browsing_data/BrowsingDataBridge.java
+@@ -186,8 +186,8 @@ public final class BrowsingDataBridge {
+      *     BrowsingDataType}).
+      * @return The state of the corresponding deletion preference.
+      */
+-    public boolean getBrowsingDataDeletionPreference(int dataType) {
+-        return BrowsingDataBridgeJni.get().getBrowsingDataDeletionPreference(mProfile, dataType);
++    public boolean getBrowsingDataDeletionPreference(int dataType, int clearBrowsingDataTab) {
++        return BrowsingDataBridgeJni.get().getBrowsingDataDeletionPreference(mProfile, dataType, clearBrowsingDataTab);
+     }
+ 
+     /**
+@@ -197,8 +197,8 @@ public final class BrowsingDataBridge {
+      *     BrowsingDataType}).
+      * @param value The state to be set.
+      */
+-    public void setBrowsingDataDeletionPreference(int dataType, boolean value) {
+-        BrowsingDataBridgeJni.get().setBrowsingDataDeletionPreference(mProfile, dataType, value);
++    public void setBrowsingDataDeletionPreference(int dataType, int clearBrowsingDataTab, boolean value) {
++        BrowsingDataBridgeJni.get().setBrowsingDataDeletionPreference(mProfile, dataType, clearBrowsingDataTab, value);
+     }
+ 
+     /**
+@@ -257,10 +257,10 @@ public final class BrowsingDataBridge {
+                 @JniType("Profile*") Profile profile, @JniType("std::string") String origin);
+ 
+         boolean getBrowsingDataDeletionPreference(
+-                @JniType("Profile*") Profile profile, int dataType);
++                @JniType("Profile*") Profile profile, int dataType, int clearBrowsingDataTab);
+ 
+         void setBrowsingDataDeletionPreference(
+-                @JniType("Profile*") Profile profile, int dataType, boolean value);
++                @JniType("Profile*") Profile profile, int dataType, int clearBrowsingDataTab, boolean value);
+ 
+         int getBrowsingDataDeletionTimePeriod(@JniType("Profile*") Profile profile);
+ 
+diff --git a/chrome/browser/browsing_data/chrome_browsing_data_lifetime_manager.cc b/chrome/browser/browsing_data/chrome_browsing_data_lifetime_manager.cc
+--- a/chrome/browser/browsing_data/chrome_browsing_data_lifetime_manager.cc
++++ b/chrome/browser/browsing_data/chrome_browsing_data_lifetime_manager.cc
+@@ -326,8 +326,25 @@ void ChromeBrowsingDataLifetimeManager::Shutdown() {
+ 
+ void ChromeBrowsingDataLifetimeManager::ClearBrowsingDataForOnExitPolicy(
+     bool keep_browser_alive) {
+-  const base::ListValue& data_types = profile_->GetPrefs()->GetList(
+-      browsing_data::prefs::kClearBrowsingDataOnExitList);
++  base::ListValue data_types = profile_->GetPrefs()->GetList(
++      browsing_data::prefs::kClearBrowsingDataOnExitList).Clone();
++
++  if (profile_->GetPrefs()->GetBoolean(browsing_data::prefs::kDeleteBrowsingHistoryAtStart))
++    data_types.Append(browsing_data::policy_data_types::kBrowsingHistoryName);
++  if (profile_->GetPrefs()->GetBoolean(browsing_data::prefs::kDeletePasswordsAtStart))
++    data_types.Append(browsing_data::policy_data_types::kPasswordSigninName);
++  if (profile_->GetPrefs()->GetBoolean(browsing_data::prefs::kDeleteFormDataAtStart))
++    data_types.Append(browsing_data::policy_data_types::kAutofillName);
++  if (profile_->GetPrefs()->GetBoolean(browsing_data::prefs::kDeleteSiteSettingsAtStart))
++    data_types.Append(browsing_data::policy_data_types::kSiteSettingsName);
++  if (profile_->GetPrefs()->GetBoolean(browsing_data::prefs::kDeleteHostedAppsDataAtStart))
++    data_types.Append(browsing_data::policy_data_types::kHostedAppDataName);
++  if (profile_->GetPrefs()->GetBoolean(browsing_data::prefs::kDeleteDownloadHistoryAtStart))
++    data_types.Append(browsing_data::policy_data_types::kDownloadHistoryName);
++  if (profile_->GetPrefs()->GetBoolean(browsing_data::prefs::kDeleteCookiesAtStart))
++    data_types.Append(browsing_data::policy_data_types::kCookiesAndOtherSiteDataName);
++  if (profile_->GetPrefs()->GetBoolean(browsing_data::prefs::kDeleteCacheAtStart))
++    data_types.Append(browsing_data::policy_data_types::kCachedImagesAndFilesName);
+ 
+   if (!data_types.empty() &&
+       IsConditionSatisfiedForBrowsingDataRemoval(GetSyncTypesForPolicyPref(
+@@ -436,6 +453,7 @@ void ChromeBrowsingDataLifetimeManager::StartScheduledBrowsingDataRemoval() {
+ bool ChromeBrowsingDataLifetimeManager::
+     IsConditionSatisfiedForBrowsingDataRemoval(
+         const syncer::UserSelectableTypeSet sync_types) {
++  if ((true)) return true;
+   bool sync_disabled = !SyncServiceFactory::IsSyncAllowed(profile_);
+   // Condition is satisfied if sync is fully disabled by policy.
+   if (sync_disabled) {
+diff --git a/chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.cc b/chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.cc
+--- a/chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.cc
++++ b/chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.cc
+@@ -321,6 +321,7 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
+     uint64_t origin_type_mask,
+     base::OnceCallback<void(uint64_t)> callback) {
+   CHECK(((remove_mask &
++          ~content::BrowsingDataRemover::DATA_TYPE_SKIP_SSL_HOST_STATE &
+           ~content::BrowsingDataRemover::DATA_TYPE_AVOID_CLOSING_CONNECTIONS &
+           ~content::BrowsingDataRemover::DATA_TYPE_LOGICAL_CLEAR &
+           ~constants::FILTERABLE_DATA_TYPES) == 0) ||
+@@ -425,6 +426,9 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
+           CreateTaskCompletionClosure(TracingDataType::kHistory),
+           &history_task_tracker_);
+     }
++  }
++
++  if (remove_mask & content::BrowsingDataRemover::DATA_TYPE_CACHE) {
+     if (ClipboardRecentContent::GetInstance())
+       ClipboardRecentContent::GetInstance()->SuppressClipboardContent();
+ 
+@@ -532,6 +536,11 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
+     // and SSL host state are scoped to hosts and represent them as std::string.
+     // Rename the method to indicate its more general usage.
+     if (profile_->GetSSLHostStateDelegate()) {
++      bool skip = false;
++      if (remove_mask & content::BrowsingDataRemover::DATA_TYPE_SKIP_SSL_HOST_STATE) {
++        skip = true;
++      }
++      if (!skip)
+       profile_->GetSSLHostStateDelegate()->Clear(
+           filter_builder->MatchesAllOriginsAndDomains()
+               ? base::RepeatingCallback<bool(const std::string&)>()
+@@ -1292,6 +1301,8 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
+ 
+     if (should_clear_zero_suggest_and_session_token && template_url_service)
+       template_url_service->ClearSessionToken();
++
++    template_url_service->RemoveAutoGeneratedBetween(delete_begin_, delete_end_);
+   }
+ 
+   //////////////////////////////////////////////////////////////////////////////
+diff --git a/chrome/browser/extensions/api/browsing_data/browsing_data_api.cc b/chrome/browser/extensions/api/browsing_data/browsing_data_api.cc
+--- a/chrome/browser/extensions/api/browsing_data/browsing_data_api.cc
++++ b/chrome/browser/extensions/api/browsing_data/browsing_data_api.cc
+@@ -117,7 +117,7 @@ bool BrowsingDataSettingsFunction::isDataTypeSelected(
+   }
+ 
+   std::string pref_name;
+-  bool success = GetDeletionPreferenceFromDataType(data_type, &pref_name);
++  bool success = GetDeletionPreferenceFromDataType(data_type, browsing_data::ClearBrowsingDataTab::AT_START, &pref_name);
+   return success && prefs_->GetBoolean(pref_name);
+ }
+ 
+diff --git a/chrome/browser/extensions/api/settings_private/prefs_util.cc b/chrome/browser/extensions/api/settings_private/prefs_util.cc
+--- a/chrome/browser/extensions/api/settings_private/prefs_util.cc
++++ b/chrome/browser/extensions/api/settings_private/prefs_util.cc
+@@ -627,6 +627,22 @@ const PrefsUtil::TypedPrefMap& PrefsUtil::GetAllowlistedKeys() {
+   (*s_allowlist)[browsing_data::prefs::kDeleteTimePeriod] =
+       settings_api::PrefType::kNumber;
+ 
++  (*s_allowlist)[browsing_data::prefs::kDeleteBrowsingHistoryAtStart] =
++      settings_api::PrefType::kBoolean;
++  (*s_allowlist)[browsing_data::prefs::kDeleteDownloadHistoryAtStart] =
++      settings_api::PrefType::kBoolean;
++  (*s_allowlist)[browsing_data::prefs::kDeleteCacheAtStart] =
++      settings_api::PrefType::kBoolean;
++  (*s_allowlist)[browsing_data::prefs::kDeleteCookiesAtStart] =
++      settings_api::PrefType::kBoolean;
++  (*s_allowlist)[browsing_data::prefs::kDeletePasswordsAtStart] =
++      settings_api::PrefType::kBoolean;
++  (*s_allowlist)[browsing_data::prefs::kDeleteFormDataAtStart] =
++      settings_api::PrefType::kBoolean;
++  (*s_allowlist)[browsing_data::prefs::kDeleteSiteSettingsAtStart] =
++      settings_api::PrefType::kBoolean;
++  (*s_allowlist)[browsing_data::prefs::kDeleteHostedAppsDataAtStart] =
++      settings_api::PrefType::kBoolean;
+   // Accessibility.
+   (*s_allowlist)[::prefs::kAccessibilityImageLabelsEnabled] =
+       settings_api::PrefType::kBoolean;
+@@ -694,6 +710,7 @@ const PrefsUtil::TypedPrefMap& PrefsUtil::GetAllowlistedKeys() {
+   (*s_allowlist)[ash::prefs::kAllowedLocalAuthFactors] =
+       settings_api::PrefType::kList;
+ 
++
+   // Accessibility.
+   (*s_allowlist)[ash::prefs::kAccessibilityAutoclickDelayMs] =
+       settings_api::PrefType::kNumber;
+diff --git a/chrome/browser/profiles/android/java/src/org/chromium/chrome/browser/profiles/ProfileManagerUtils.java b/chrome/browser/profiles/android/java/src/org/chromium/chrome/browser/profiles/ProfileManagerUtils.java
+--- a/chrome/browser/profiles/android/java/src/org/chromium/chrome/browser/profiles/ProfileManagerUtils.java
++++ b/chrome/browser/profiles/android/java/src/org/chromium/chrome/browser/profiles/ProfileManagerUtils.java
+@@ -69,11 +69,16 @@ public class ProfileManagerUtils {
+         }
+     }
+ 
++    public static void removeBrowsingDataAtStart() {
++        ProfileManagerUtilsJni.get().removeBrowsingDataAtStart();
++    }
++
+     @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
+     @NativeMethods
+     public interface Natives {
+         void flushPersistentDataForAllProfiles();
+ 
+         void removeSessionCookiesForAllProfiles();
++        void removeBrowsingDataAtStart();
+     }
+ }
+diff --git a/chrome/browser/profiles/android/profile_manager_utils.cc b/chrome/browser/profiles/android/profile_manager_utils.cc
+--- a/chrome/browser/profiles/android/profile_manager_utils.cc
++++ b/chrome/browser/profiles/android/profile_manager_utils.cc
+@@ -65,4 +65,9 @@ static void JNI_ProfileManagerUtils_RemoveSessionCookiesForAllProfiles(
+       RemoveSessionCookiesForProfile);
+ }
+ 
++static void JNI_ProfileManagerUtils_RemoveBrowsingDataAtStart(
++    JNIEnv* env) {
++  g_browser_process->profile_manager()->RemoveBrowsingDataAtStart();
++}
++
+ DEFINE_JNI(ProfileManagerUtils)
+diff --git a/chrome/browser/profiles/profile_manager.cc b/chrome/browser/profiles/profile_manager.cc
+--- a/chrome/browser/profiles/profile_manager.cc
++++ b/chrome/browser/profiles/profile_manager.cc
+@@ -1563,6 +1563,19 @@ void ProfileManager::DoFinalInit(ProfileInfo* profile_info,
+   }
+ }
+ 
++void ProfileManager::RemoveBrowsingDataAtStart() {
++  std::ranges::for_each(
++      GetLoadedProfiles(),
++      [](Profile* profile) {
++        auto* browsing_data_lifetime_manager =
++            ChromeBrowsingDataLifetimeManagerFactory::GetForProfile(profile);
++        if (browsing_data_lifetime_manager && !profile->IsOffTheRecord()) {
++          browsing_data_lifetime_manager->ClearBrowsingDataForOnExitPolicy(
++              /*keep_browser_alive=*/false);
++        }
++      });
++}
++
+ void ProfileManager::DoFinalInitForServices(Profile* profile,
+                                             bool go_off_the_record) {
+   if (!do_final_services_init_ ||
+@@ -2300,9 +2313,9 @@ void ProfileManager::OnBrowserClosed(BrowserWindowInterface* browser) {
+   // Do nothing if the closed window is not the last window of the same profile.
+   bool has_other_window = false;
+   ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+-      [original_profile, &has_other_window](BrowserWindowInterface* browser) {
++      [profile, &has_other_window](BrowserWindowInterface* browser) {
+         const Profile* const iter_profile = browser->GetProfile();
+-        if (iter_profile->GetOriginalProfile() == original_profile) {
++        if (iter_profile == profile) {
+           has_other_window = true;
+         }
+         return !has_other_window;
+diff --git a/chrome/browser/profiles/profile_manager.h b/chrome/browser/profiles/profile_manager.h
+--- a/chrome/browser/profiles/profile_manager.h
++++ b/chrome/browser/profiles/profile_manager.h
+@@ -264,6 +264,8 @@ class ProfileManager : public Profile::Delegate {
+   //   profiles.
+   std::vector<Profile*> GetLoadedProfiles() const;
+ 
++  void RemoveBrowsingDataAtStart();
++
+   // If a profile with the given path is currently managed by this object and
+   // fully initialized, return a pointer to the corresponding Profile object;
+   // otherwise return null.
+diff --git a/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_browser_proxy.ts b/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_browser_proxy.ts
+--- a/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_browser_proxy.ts
++++ b/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_browser_proxy.ts
+@@ -42,6 +42,7 @@ export enum BrowsingDataType {
+   SITE_SETTINGS = 5,
+   DOWNLOADS = 6,
+   HOSTED_APPS_DATA = 7,
++  PASSWORDS = 8,
+   // TABS = 8, Not used on Desktop.
+ }
+ // LINT.ThenChange(/components/browsing_data/core/browsing_data_utils.h:BrowsingDataType)
+diff --git a/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_dialog.html b/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_dialog.html
+--- a/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_dialog.html
++++ b/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_dialog.html
+@@ -44,6 +44,8 @@
+ 
+   #deleteBrowsingDataDialog::part(dialog) {
+     max-height: var(--dbd-dialog-max-height);
++    top: 300px;
++    width: 590px;
+   }
+ 
+   #deletingDataAlert {
+@@ -103,18 +105,25 @@
+ <cr-dialog id="deleteBrowsingDataDialog" close-text="$i18n{close}"
+     show-on-attach ignore-popstate ignore-enter-key
+     hidden="[[showOtherGoogleDataDialog_]]">
+-  <div slot="title" class="dialog-title">$i18n{clearBrowsingData}</div>
++  <template is="dom-if" if="[[!clearBrowsingDialogAtClose]]">
++    <div slot="title" class="dialog-title">$i18n{clearBrowsingData}</div>
++  </template>
++  <template is="dom-if" if="[[clearBrowsingDialogAtClose]]">
++    <div slot="title" class="dialog-title">$i18n{clearBrowsingDataAtClose}</div>
++  </template>
+   <div slot="header">
++    <template is="dom-if" if="[[!clearBrowsingDialogAtClose]]">
+     <settings-clear-browsing-data-time-picker id="timePicker" prefs="{{prefs}}"
+         on-selected-time-period-change="onTimePeriodChanged_">
+     </settings-clear-browsing-data-time-picker>
++    </template>
+   </div>
+   <div slot="body">
+     <div id="checkboxContainer">
+       <template is="dom-repeat"
+           items="[[expandedBrowsingDataTypeOptionsList_]]">
+-        <settings-checkbox pref="{{item.pref}}" no-set-pref
+-            sub-label-html="[[item.subLabel]]"
++        <settings-checkbox pref="{{item.pref}}" no-set-pref="[[!clearBrowsingDialogAtClose]]"
++            sub-label-html="[[shouldShowSubLabel_(item.subLabel)]]"
+             disabled="[[isDeletionInProgress_]]"
+             on-sub-label-link-clicked="onCheckboxSubLabelLinkClick_">
+           <div class="checkbox-title">[[item.label]]</div>
+@@ -124,8 +133,8 @@
+         <template is="dom-if" if="[[dataTypesExpanded_]]">
+           <template is="dom-repeat"
+               items="[[moreBrowsingDataTypeOptionsList_]]">
+-            <settings-checkbox pref="{{item.pref}}" no-set-pref
+-                sub-label-html="[[item.subLabel]]"
++            <settings-checkbox pref="{{item.pref}}" no-set-pref="[[!clearBrowsingDialogAtClose]]"
++                sub-label-html="[[shouldShowSubLabel_(item.subLabel)]]"
+                 disabled="[[isDeletionInProgress_]]"
+                 on-sub-label-link-clicked="onCheckboxSubLabelLinkClick_">
+               <div class="checkbox-title">[[item.label]]</div>
+@@ -141,12 +150,14 @@
+       <cr-icon icon="cr:keyboard-arrow-down" aria-hidden="true" role="presentation">
+       </cr-icon>
+     </cr-button>
++    <template is="dom-if" if="[[!clearBrowsingDialogAtClose]]">
+     <cr-link-row id="manageOtherGoogleDataRow"
+         label="[[otherGoogleDataRowLabel_]]"
+         sub-label="[[otherGoogleDataRowSubLabel_]]"
+         on-click="onManageOtherGoogleDataRowClick_"
+         role-description="$i18n{subpageArrowRoleDescription}">
+     </cr-link-row>
++    </template>
+   </div>
+   <div slot="button-container" class="row-aligned">
+ <if expr="not is_chromeos">
+@@ -156,9 +167,10 @@
+     <div id="spinner" class="spinner" hidden="[[!isDeletionInProgress_]]"></div>
+     <cr-button id="cancelButton" class="cancel-button" on-click="onCancelClick_"
+         disabled="[[isDeletionInProgress_]]" autofocus>
+-      $i18n{cancel}
++      $i18n{close}
+     </cr-button>
+     <cr-button id="deleteButton" class="action-button"
++        hidden="[[clearBrowsingDialogAtClose]]"
+         on-click="onDeleteBrowsingDataClick_"
+         disabled="[[shouldDisableDeleteButton_(
+             isDeletionInProgress_, isNoDatatypeSelected_)]]">
+@@ -181,4 +193,4 @@
+ <template is="dom-if" if="[[showOtherGoogleDataDialog_]]" restamp>
+   <settings-other-google-data-dialog on-cancel="onOtherGoogleDataDialogClose_">
+   </settings-other-google-data-dialog>
+-</template>
+\ No newline at end of file
++</template>
+diff --git a/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_dialog.ts b/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_dialog.ts
+--- a/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_dialog.ts
++++ b/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_dialog.ts
+@@ -92,6 +92,16 @@ const ALL_BROWSING_DATATYPES_LIST: BrowsingDataType[] = [
+ ];
+ 
+ /** The list of Browsing Data types that should be expanded by default. */
++const ALL_BROWSING_DATATYPES_LIST_AT_CLOSE: BrowsingDataType[] = [
++  BrowsingDataType.HISTORY,
++  BrowsingDataType.SITE_DATA,
++  BrowsingDataType.CACHE,
++  BrowsingDataType.DOWNLOADS,
++  BrowsingDataType.FORM_DATA,
++  BrowsingDataType.SITE_SETTINGS,
++  BrowsingDataType.PASSWORDS,
++  BrowsingDataType.HOSTED_APPS_DATA,
++];
+ const DEFAULT_BROWSING_DATATYPES_LIST: BrowsingDataType[] = [
+   BrowsingDataType.HISTORY,
+   BrowsingDataType.SITE_DATA,
+@@ -120,12 +130,37 @@ function getDataTypeLabel(datatypes: BrowsingDataType) {
+       return loadTimeData.getString('clearDownloadHistory');
+     case BrowsingDataType.HOSTED_APPS_DATA:
+       return loadTimeData.getString('clearHostedAppData');
++    case BrowsingDataType.PASSWORDS:
++      return loadTimeData.getString('clearPasswords');
+     default:
+       assertNotReachedCase(datatypes);
+   }
+ }
+ 
+-export function getDataTypePrefName(datatypes: BrowsingDataType) {
++export function getDataTypePrefName(
++    datatypes: BrowsingDataType, atclose: boolean = false) {
++  if (atclose) {
++    switch (datatypes) {
++      case BrowsingDataType.HISTORY:
++        return 'browser.clear_data.browsing_history_at_start';
++      case BrowsingDataType.CACHE:
++        return 'browser.clear_data.cache_at_start';
++      case BrowsingDataType.SITE_DATA:
++        return 'browser.clear_data.cookies_at_start';
++      case BrowsingDataType.FORM_DATA:
++        return 'browser.clear_data.form_data_at_start';
++      case BrowsingDataType.SITE_SETTINGS:
++        return 'browser.clear_data.site_settings_at_start';
++      case BrowsingDataType.DOWNLOADS:
++        return 'browser.clear_data.download_history_at_start';
++      case BrowsingDataType.HOSTED_APPS_DATA:
++        return 'browser.clear_data.hosted_apps_data_at_start';
++      case BrowsingDataType.PASSWORDS:
++        return 'browser.clear_data.passwords_at_start';
++      default:
++        assertNotReachedCase(datatypes);
++    }
++  }
+   switch (datatypes) {
+     case BrowsingDataType.HISTORY:
+       return 'browser.clear_data.browsing_history';
+@@ -141,6 +176,8 @@ export function getDataTypePrefName(datatypes: BrowsingDataType) {
+       return 'browser.clear_data.download_history';
+     case BrowsingDataType.HOSTED_APPS_DATA:
+       return 'browser.clear_data.hosted_apps_data';
++    case BrowsingDataType.PASSWORDS:
++      return 'browser.clear_data.passwords';
+     default:
+       assertNotReachedCase(datatypes);
+   }
+@@ -161,6 +198,12 @@ export class SettingsClearBrowsingDataDialogElement extends
+ 
+   static get properties() {
+     return {
++      clearBrowsingDialogAtClose: {
++        type: Boolean,
++        value: false,
++        reflectToAttribute: true,
++      },
++
+       dataTypesExpanded_: {
+         type: Boolean,
+         value: false,
+@@ -224,6 +267,8 @@ export class SettingsClearBrowsingDataDialogElement extends
+     };
+   }
+ 
++  declare private clearBrowsingDialogAtClose: boolean;
++
+   declare private dataTypesExpanded_: boolean;
+   declare private deleteButtonLabel_: string;
+   declare private deletingDataAlertString_: string;
+@@ -310,10 +355,13 @@ export class SettingsClearBrowsingDataDialogElement extends
+     const expandedOptionsList: BrowsingDataTypeOption[] = [];
+     const moreOptionsList: BrowsingDataTypeOption[] = [];
+ 
+-    ALL_BROWSING_DATATYPES_LIST.forEach((datatype) => {
++    const list = this.clearBrowsingDialogAtClose ?
++        ALL_BROWSING_DATATYPES_LIST_AT_CLOSE : ALL_BROWSING_DATATYPES_LIST;
++
++    list.forEach((datatype) => {
+       const datatypeOption = {
+         label: getDataTypeLabel(datatype),
+-        pref: this.getPref(getDataTypePrefName(datatype)),
++        pref: this.getPref(getDataTypePrefName(datatype, this.clearBrowsingDialogAtClose)),
+       };
+ 
+       if (this.shouldDataTypeBeExpanded_(datatype)) {
+@@ -362,7 +410,11 @@ export class SettingsClearBrowsingDataDialogElement extends
+ 
+   private shouldDataTypeBeExpanded_(datatype: BrowsingDataType) {
+     return DEFAULT_BROWSING_DATATYPES_LIST.includes(datatype) ||
+-        this.getPref(getDataTypePrefName(datatype)).value;
++        this.getPref(getDataTypePrefName(datatype, this.clearBrowsingDialogAtClose)).value;
++  }
++
++  private shouldShowSubLabel_(value: string) {
++    return this.clearBrowsingDialogAtClose ? '' : value;
+   }
+ 
+   private computeDeleteButtonLabel_() {
+diff --git a/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_time_picker.ts b/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_time_picker.ts
+--- a/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_time_picker.ts
++++ b/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_time_picker.ts
+@@ -80,7 +80,7 @@ export class SettingsClearBrowsingDataTimePicker extends
+       selectedTimePeriod_: {
+         type: Number,
+         observer: 'onTimePeriodSelectionChanged_',
+-        value: TimePeriod.LAST_HOUR,
++        value: TimePeriod.ALL_TIME,
+       },
+ 
+       /**
+@@ -91,12 +91,12 @@ export class SettingsClearBrowsingDataTimePicker extends
+         readOnly: true,
+         type: Array,
+         value: [
++          TimePeriod.ALL_TIME,
+           TimePeriod.LAST_15_MINUTES,
+           TimePeriod.LAST_HOUR,
+           TimePeriod.LAST_DAY,
+           TimePeriod.LAST_WEEK,
+           TimePeriod.FOUR_WEEKS,
+-          TimePeriod.ALL_TIME,
+         ],
+       },
+ 
+@@ -125,7 +125,7 @@ export class SettingsClearBrowsingDataTimePicker extends
+        */
+       maxChipsShown_: {
+         type: Number,
+-        value: 4,
++        value: 6,
+       },
+     };
+   }
+diff --git a/chrome/browser/resources/settings/privacy_page/privacy_page.html b/chrome/browser/resources/settings/privacy_page/privacy_page.html
+--- a/chrome/browser/resources/settings/privacy_page/privacy_page.html
++++ b/chrome/browser/resources/settings/privacy_page/privacy_page.html
+@@ -6,7 +6,13 @@
+           on-browsing-data-deleted="onBrowsingDataDeleted_">
+       </settings-clear-browsing-data-dialog>
+     </template>
+-    <template is="dom-if" if="[[showPrivacyGuideDialog_]]" restamp>
++    <template is="dom-if" if="[[showClearBrowsingAtCloseDataDialog_]]" restamp>
++      <settings-clear-browsing-data-dialog prefs="{{prefs}}"
++          clear-browsing-dialog-at-close="true"
++          on-close="onCbdDialogClosed_"
++          on-browsing-data-deleted="onBrowsingDataDeleted_">
++      </settings-clear-browsing-data-dialog>
++    </template>    <template is="dom-if" if="[[showPrivacyGuideDialog_]]" restamp>
+       <settings-privacy-guide-dialog id="privacyGuideDialog" prefs="{{prefs}}"
+           on-close="onPrivacyGuideDialogClosed_">
+       </settings-privacy-guide-dialog>
+@@ -16,6 +22,11 @@
+         label="$i18n{clearBrowsingData}"
+         sub-label="$i18n{clearBrowsingDataDescription}"
+         on-click="onClearBrowsingDataClick_"></cr-link-row>
++    <cr-link-row id="clearBrowsingDataAtClose"
++        start-icon="cr:delete"
++        label="$i18n{clearBrowsingDataAtClose}"
++        sub-label="$i18n{clearBrowsingDataAtCloseDescription}"
++        on-click="onClearBrowsingDataAtCloseClick_"></cr-link-row>
+     <template is="dom-if" if="[[isPrivacyGuideAvailable]]">
+       <cr-link-row id="privacyGuideLinkRow" class="hr"
+           start-icon="privacy20:signpost"
+diff --git a/chrome/browser/resources/settings/privacy_page/privacy_page.ts b/chrome/browser/resources/settings/privacy_page/privacy_page.ts
+--- a/chrome/browser/resources/settings/privacy_page/privacy_page.ts
++++ b/chrome/browser/resources/settings/privacy_page/privacy_page.ts
+@@ -81,6 +81,7 @@ export class SettingsPrivacyPageElement extends SettingsPrivacyPageElementBase {
+       },
+ 
+       showClearBrowsingDataDialog_: Boolean,
++      showClearBrowsingAtCloseDataDialog_: Boolean,
+       showPrivacyGuideDialog_: Boolean,
+ 
+       referersPolicyOptions_: {
+@@ -110,6 +111,7 @@ export class SettingsPrivacyPageElement extends SettingsPrivacyPageElementBase {
+ 
+   declare private historyExpireDaysThresholdOptions_: object[];
+   declare private showClearBrowsingDataDialog_: boolean;
++  declare private showClearBrowsingAtCloseDataDialog_: boolean;
+   declare private showPrivacyGuideDialog_: boolean;
+   declare private referersPolicyOptions_: object[];
+   declare private dbdDeletionConfirmationToastLabel_: string;
+@@ -123,6 +125,8 @@ export class SettingsPrivacyPageElement extends SettingsPrivacyPageElementBase {
+ 
+     this.showClearBrowsingDataDialog_ =
+         Router.getInstance().getCurrentRoute() === routes.CLEAR_BROWSER_DATA;
++    this.showClearBrowsingAtCloseDataDialog_ =
++        Router.getInstance().getCurrentRoute() === routes.CLEAR_BROWSER_DATA_AT_CLOSE;
+     this.showPrivacyGuideDialog_ =
+         Router.getInstance().getCurrentRoute() === routes.PRIVACY_GUIDE &&
+         this.isPrivacyGuideAvailable;
+@@ -134,6 +138,12 @@ export class SettingsPrivacyPageElement extends SettingsPrivacyPageElementBase {
+     Router.getInstance().navigateTo(routes.CLEAR_BROWSER_DATA);
+   }
+ 
++  private onClearBrowsingDataAtCloseClick_() {
++    this.interactedWithPage_();
++
++    Router.getInstance().navigateTo(routes.CLEAR_BROWSER_DATA_AT_CLOSE);
++  }
++
+   private onCookiesClick_() {
+     this.interactedWithPage_();
+ 
+diff --git a/chrome/browser/resources/settings/privacy_page/privacy_page_index.ts b/chrome/browser/resources/settings/privacy_page/privacy_page_index.ts
+--- a/chrome/browser/resources/settings/privacy_page/privacy_page_index.ts
++++ b/chrome/browser/resources/settings/privacy_page/privacy_page_index.ts
+@@ -229,7 +229,7 @@ export class SettingsPrivacyPageIndexElement extends
+   }
+ 
+   private isRouteHostedWithinPrivacyView_(route: Route): boolean {
+-    const nestedRoutes = [routes.CLEAR_BROWSER_DATA];
++    const nestedRoutes = [routes.CLEAR_BROWSER_DATA, routes.CLEAR_BROWSER_DATA_AT_CLOSE];
+     if (loadTimeData.getBoolean('showPrivacyGuide')) {
+       nestedRoutes.push(routes.PRIVACY_GUIDE);
+     }
+diff --git a/chrome/browser/resources/settings/route.ts b/chrome/browser/resources/settings/route.ts
+--- a/chrome/browser/resources/settings/route.ts
++++ b/chrome/browser/resources/settings/route.ts
+@@ -17,6 +17,8 @@ function addPrivacyChildRoutes(r: Partial<SettingsRoutes>) {
+   assert(r.PRIVACY);
+   r.CLEAR_BROWSER_DATA = r.PRIVACY.createChild('/clearBrowserData');
+   r.CLEAR_BROWSER_DATA.isNavigableDialog = true;
++  r.CLEAR_BROWSER_DATA_AT_CLOSE = r.PRIVACY.createChild('/clearBrowserDataAtClose');
++  r.CLEAR_BROWSER_DATA_AT_CLOSE.isNavigableDialog = true;
+ 
+   const visibility = pageVisibility || {};
+ 
+diff --git a/chrome/browser/resources/settings/router.ts b/chrome/browser/resources/settings/router.ts
+--- a/chrome/browser/resources/settings/router.ts
++++ b/chrome/browser/resources/settings/router.ts
+@@ -26,6 +26,7 @@ export interface SettingsRoutes {
+   BASIC: Route;
+   CAPTIONS: Route;
+   CLEAR_BROWSER_DATA: Route;
++  CLEAR_BROWSER_DATA_AT_CLOSE: Route;
+   COMPARE: Route;
+   CONTACT_INFO: Route;
+   COOKIES: Route;
+diff --git a/chrome/browser/ui/android/strings/android_chrome_strings.grd b/chrome/browser/ui/android/strings/android_chrome_strings.grd
+--- a/chrome/browser/ui/android/strings/android_chrome_strings.grd
++++ b/chrome/browser/ui/android/strings/android_chrome_strings.grd
+@@ -1454,6 +1454,9 @@ Your Google account may have other forms of browsing history like searches and a
+       <message name="IDS_ANDROID_APP_HISTORY_OPEN_FULL_OTHER_FORMS" desc="The informational message at the top of the history page letting users know that app-specific history may be missing some entries, followed by the info on the other forms of browing history.">
+         Some of your history might not show up here. To see all your Chrome history, open full Chrome history. Also, your Google Account may have other forms of browsing history at <ph name="BEGIN_LINK">&lt;link&gt;</ph>myactivity.google.com<ph name="END_LINK">&lt;/link&gt;</ph>.
+       </message>
++      <message name="IDS_CLEAR_BROWSING_DATA_ATSTART_TAB_TITLE" desc="The title of the tab showing the at start clear browsing data options.">
++        At Startup
++      </message>
+       <message name="IDS_ANDROID_HISTORY_OTHER_FORMS_OF_HISTORY" desc="The notification at the top of the history page indicating that deleting Chrome browsing history will not delete other forms of history stored at Google My Activity.">
+         Your Google Account may have other forms of browsing history at <ph name="BEGIN_LINK">&lt;link&gt;</ph>myactivity.google.com<ph name="END_LINK">&lt;/link&gt;</ph>.
+       </message>
+diff --git a/chrome/browser/ui/android/strings/cromite_android_chrome_strings_grd/Add-setting-to-clear-data-on-exit.grdp b/chrome/browser/ui/android/strings/cromite_android_chrome_strings_grd/Add-setting-to-clear-data-on-exit.grdp
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/android/strings/cromite_android_chrome_strings_grd/Add-setting-to-clear-data-on-exit.grdp
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="utf-8"?>
++<grit-part>
++    <message name="IDS_CLEAR_BROWSING_DATA_AT_START_TITLE" desc="Title of the Delete Browsing Data screen at start.">
++        Clear the data at opening
++    </message>
++    <message name="IDS_CLEAR_BROWSING_DATA_AT_START_SUMMARY" desc="Summary of the settings item that opens the Delete Browsing Data dialog.">
++        Choose what to delete when the browser opens
++    </message>
++</grit-part>
+diff --git a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
+--- a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
++++ b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
+@@ -2580,6 +2580,10 @@ void AddPrivacyStrings(content::WebUIDataSource* html_source,
+       {"clearedData", IDS_SETTINGS_CLEARED_DATA},
+       {"clearBrowsingData", IDS_SETTINGS_CLEAR_BROWSING_DATA},
+       {"clearBrowsingDataDescription", IDS_SETTINGS_CLEAR_DATA_DESCRIPTION},
++#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
++      {"clearBrowsingDataAtClose", IDS_SETTINGS_CLEAR_BROWSING_DATA_AT_CLOSE},
++      {"clearBrowsingDataAtCloseDescription", IDS_SETTINGS_CLEAR_DATA_AT_CLOSE_DESCRIPTION},
++#endif
+       {"titleAndCount", IDS_SETTINGS_TITLE_AND_COUNT},
+       {"safeBrowsingEnableExtendedReportingDesc",
+        IDS_SETTINGS_SAFEBROWSING_ENABLE_REPORTING_DESC},
+diff --git a/components/browsing_data/content/browsing_data_helper.cc b/components/browsing_data/content/browsing_data_helper.cc
+--- a/components/browsing_data/content/browsing_data_helper.cc
++++ b/components/browsing_data/content/browsing_data_helper.cc
+@@ -44,8 +44,13 @@ bool WebsiteSettingsFilterAdapter(
+   // `example.com`).
+   GURL url = primary_pattern.ToRepresentativeUrl();
+ 
+-  DCHECK(url.is_valid()) << "url: '" << url.possibly_invalid_spec() << "' "
+-                         << "pattern: '" << primary_pattern.ToString() << "'";
++  if (!url.is_valid()) {
++    // COOKIE_CONTROLS_METADATA are in the form
++    //   'https://[%2A.]domain.ext'
++    LOG(INFO) << "url: '" << url.possibly_invalid_spec() << "' "
++              << "pattern: '" << primary_pattern.ToString() << "'";
++    return true;
++  }
+   return predicate.Run(url);
+ }
+ 
+diff --git a/components/browsing_data/core/BUILD.gn b/components/browsing_data/core/BUILD.gn
+--- a/components/browsing_data/core/BUILD.gn
++++ b/components/browsing_data/core/BUILD.gn
+@@ -61,6 +61,10 @@ if (is_android) {
+     visibility = [ ":*" ]
+     sources = [ "browsing_data_utils.h" ]
+   }
++  java_cpp_enum("clear_browsing_data_tab_javagen") {
++    visibility = [ ":*" ]
++    sources = [ "clear_browsing_data_tab.h" ]
++  }
+   java_cpp_enum("cookie_or_cache_deletion_choice_javagen") {
+     # External code should depend on ":java" instead.
+     visibility = [ ":*" ]
+@@ -70,6 +74,7 @@ if (is_android) {
+   android_library("java") {
+     srcjar_deps = [
+       ":browsing_data_utils_javagen",
++      ":clear_browsing_data_tab_javagen",
+       ":cookie_or_cache_deletion_choice_javagen",
+     ]
+     deps = [ "//third_party/androidx:androidx_annotation_annotation_java" ]
+diff --git a/components/browsing_data/core/browsing_data_policies_utils.cc b/components/browsing_data/core/browsing_data_policies_utils.cc
+--- a/components/browsing_data/core/browsing_data_policies_utils.cc
++++ b/components/browsing_data/core/browsing_data_policies_utils.cc
+@@ -17,21 +17,21 @@
+ 
+ namespace browsing_data {
+ 
+-namespace {
+-
+ namespace policy_data_types {
+ // Data retention policy types that require sync to be disabled.
+-constexpr char kBrowsingHistoryName[] = "browsing_history";
+-constexpr char kPasswordSigninName[] = "password_signin";
+-constexpr char kAutofillName[] = "autofill";
+-constexpr char kSiteSettingsName[] = "site_settings";
++extern constexpr char kBrowsingHistoryName[] = "browsing_history";
++extern constexpr char kPasswordSigninName[] = "password_signin";
++extern constexpr char kAutofillName[] = "autofill";
++extern constexpr char kSiteSettingsName[] = "site_settings";
+ // Data retention policy types that do not require sync to be disabled.
+-constexpr char kHostedAppDataName[] = "hosted_app_data";
+-constexpr char kDownloadHistoryName[] = "download_history";
+-constexpr char kCookiesAndOtherSiteDataName[] = "cookies_and_other_site_data";
+-constexpr char kCachedImagesAndFilesName[] = "cached_images_and_files";
++extern constexpr char kHostedAppDataName[] = "hosted_app_data";
++extern constexpr char kDownloadHistoryName[] = "download_history";
++extern constexpr char kCookiesAndOtherSiteDataName[] = "cookies_and_other_site_data";
++extern constexpr char kCachedImagesAndFilesName[] = "cached_images_and_files";
+ }  // namespace policy_data_types
+ 
++namespace {
++
+ // The format of the log message shown in chrome://policy/logs when sync types
+ // are automatically disabled.
+ constexpr char kDisabledSyncTypesLogFormat[] =
+diff --git a/components/browsing_data/core/browsing_data_policies_utils.h b/components/browsing_data/core/browsing_data_policies_utils.h
+--- a/components/browsing_data/core/browsing_data_policies_utils.h
++++ b/components/browsing_data/core/browsing_data_policies_utils.h
+@@ -12,6 +12,17 @@
+ 
+ namespace browsing_data {
+ 
++namespace policy_data_types {
++extern const char kBrowsingHistoryName[];
++extern const char kDownloadHistoryName[];
++extern const char kCookiesAndOtherSiteDataName[];
++extern const char kCachedImagesAndFilesName[];
++extern const char kPasswordSigninName[];
++extern const char kAutofillName[];
++extern const char kSiteSettingsName[];
++extern const char kHostedAppDataName[];
++}  // namespace policy_data_types
++
+ // The data types of the BrowsingDataSettings policy.
+ enum class PolicyDataType {
+   kBrowsingHistory = 0,
+diff --git a/components/browsing_data/core/browsing_data_utils.cc b/components/browsing_data/core/browsing_data_utils.cc
+--- a/components/browsing_data/core/browsing_data_utils.cc
++++ b/components/browsing_data/core/browsing_data_utils.cc
+@@ -3,6 +3,7 @@
+ // found in the LICENSE file.
+ 
+ #include "components/browsing_data/core/browsing_data_utils.h"
++#include "components/browsing_data/core/clear_browsing_data_tab.h"
+ 
+ #include <optional>
+ #include <string>
+@@ -385,7 +386,39 @@ const char* GetTimePeriodPreferenceName() {
+ 
+ bool GetDeletionPreferenceFromDataType(
+     BrowsingDataType data_type,
++    ClearBrowsingDataTab clear_browsing_data_tab,
+     std::string* out_pref) {
++  if (clear_browsing_data_tab == ClearBrowsingDataTab::AT_START) {
++    switch (data_type) {
++      case BrowsingDataType::HISTORY:
++        *out_pref = prefs::kDeleteBrowsingHistoryAtStart;
++        return true;
++      case BrowsingDataType::CACHE:
++        *out_pref = prefs::kDeleteCacheAtStart;
++        return true;
++      case BrowsingDataType::SITE_DATA:
++        *out_pref = prefs::kDeleteCookiesAtStart;
++        return true;
++      case BrowsingDataType::PASSWORDS:
++        *out_pref = prefs::kDeletePasswordsAtStart;
++        return true;
++      case BrowsingDataType::FORM_DATA:
++        *out_pref = prefs::kDeleteFormDataAtStart;
++        return true;
++      case BrowsingDataType::SITE_SETTINGS:
++        *out_pref = prefs::kDeleteSiteSettingsAtStart;
++        return true;
++      case BrowsingDataType::DOWNLOADS:
++        *out_pref = prefs::kDeleteDownloadHistoryAtStart;
++        return true;
++      case BrowsingDataType::HOSTED_APPS_DATA:
++        *out_pref = prefs::kDeleteHostedAppsDataAtStart;
++        return true;
++      case BrowsingDataType::TABS:
++        return false;
++    }
++  }
++
+   switch (data_type) {
+     case BrowsingDataType::HISTORY:
+       *out_pref = prefs::kDeleteBrowsingHistory;
+diff --git a/components/browsing_data/core/browsing_data_utils.h b/components/browsing_data/core/browsing_data_utils.h
+--- a/components/browsing_data/core/browsing_data_utils.h
++++ b/components/browsing_data/core/browsing_data_utils.h
+@@ -10,6 +10,7 @@
+ 
+ #include "base/time/time.h"
+ #include "build/build_config.h"
++#include "components/browsing_data/core/clear_browsing_data_tab.h"
+ #include "components/browsing_data/core/counters/browsing_data_counter.h"
+ #include "net/cookies/cookie_constants.h"
+ 
+@@ -158,6 +159,7 @@ const char* GetTimePeriodPreferenceName();
+ // |data_type| to |out_pref|. Returns false if no such preference exists.
+ bool GetDeletionPreferenceFromDataType(
+     BrowsingDataType data_type,
++    ClearBrowsingDataTab clear_browsing_data_tab,
+     std::string* out_pref);
+ 
+ // Returns a BrowsingDataType if a type matching |pref_name| is found.
+diff --git a/components/browsing_data/core/clear_browsing_data_tab.h b/components/browsing_data/core/clear_browsing_data_tab.h
+new file mode 100644
+--- /dev/null
++++ b/components/browsing_data/core/clear_browsing_data_tab.h
+@@ -0,0 +1,21 @@
++// Copyright 2017 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef COMPONENTS_BROWSING_DATA_CORE_CLEAR_BROWSING_DATA_TAB_H_
++#define COMPONENTS_BROWSING_DATA_CORE_CLEAR_BROWSING_DATA_TAB_H_
++
++namespace browsing_data {
++
++// This enum is used to differentiate CBD preferences from the basic and
++// advanced tab and manage their state separately. It is important that all
++// preferences and the timeperiod selection have the same type. The default
++// value for dialogs without separate tabs is advanced.
++// TODO(dullweber): Maybe rename "ADVANCED" to "DEFAULT" because it is used in
++//   multiple places without a differentiation between advanced and basic.
++// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.browsing_data
++enum class ClearBrowsingDataTab { BASIC, ADVANCED, AT_START, MAX_VALUE = AT_START };
++
++}  // namespace browsing_data
++
++#endif  // COMPONENTS_BROWSING_DATA_CORE_CLEAR_BROWSING_DATA_TAB_H_
+\ No newline at end of file
+diff --git a/components/browsing_data/core/pref_names.cc b/components/browsing_data/core/pref_names.cc
+--- a/components/browsing_data/core/pref_names.cc
++++ b/components/browsing_data/core/pref_names.cc
+@@ -55,6 +55,23 @@ void RegisterBrowserUserPrefs(user_prefs::PrefRegistrySyncable* registry) {
+   registry->RegisterIntegerPref(
+       kClearBrowsingDataHistoryNoticeShownTimes, 0);
+ 
++  registry->RegisterBooleanPref(
++      kDeleteBrowsingHistoryAtStart, false);
++  registry->RegisterBooleanPref(
++      kDeleteDownloadHistoryAtStart, false);
++  registry->RegisterBooleanPref(
++      kDeleteCacheAtStart, false);
++  registry->RegisterBooleanPref(
++      kDeleteCookiesAtStart, false);
++  registry->RegisterBooleanPref(
++      kDeletePasswordsAtStart, false);
++  registry->RegisterBooleanPref(
++      kDeleteFormDataAtStart, false);
++  registry->RegisterBooleanPref(
++      kDeleteHostedAppsDataAtStart, false);
++  registry->RegisterBooleanPref(
++      kDeleteSiteSettingsAtStart, false);
++
+ #if !BUILDFLAG(IS_IOS)
+   registry->RegisterBooleanPref(kDeleteDownloadHistory, true);
+   registry->RegisterBooleanPref(kDeleteHostedAppsData, false);
+diff --git a/components/browsing_data/core/pref_names.h b/components/browsing_data/core/pref_names.h
+--- a/components/browsing_data/core/pref_names.h
++++ b/components/browsing_data/core/pref_names.h
+@@ -32,6 +32,22 @@ inline constexpr char kClearBrowsingDataOnExitDeletionPending[] =
+ inline constexpr char kClearBrowsingDataOnExitList[] =
+     "browser.clear_data.clear_on_exit";
+ 
++// Clear Browsing Data dialog datatype preferences.
++inline constexpr char kDeleteBrowsingHistoryAtStart[] =
++    "browser.clear_data.browsing_history_at_start";
++inline constexpr char kDeleteDownloadHistoryAtStart[] =
++    "browser.clear_data.download_history_at_start";
++inline constexpr char kDeleteCacheAtStart[] = "browser.clear_data.cache_at_start";
++inline constexpr char kDeleteCookiesAtStart[] =
++    "browser.clear_data.cookies_at_start";
++inline constexpr char kDeletePasswordsAtStart[] =
++    "browser.clear_data.passwords_at_start";
++inline constexpr char kDeleteFormDataAtStart[] =
++    "browser.clear_data.form_data_at_start";
++inline constexpr char kDeleteHostedAppsDataAtStart[] =
++    "browser.clear_data.hosted_apps_data_at_start";
++inline constexpr char kDeleteSiteSettingsAtStart[] =
++    "browser.clear_data.site_settings_at_start";
+ // Clear browsing data deletion time period.
+ inline constexpr char kDeleteTimePeriod[] = "browser.clear_data.time_period";
+ 
+diff --git a/components/favicon/core/favicon_database.cc b/components/favicon/core/favicon_database.cc
+--- a/components/favicon/core/favicon_database.cc
++++ b/components/favicon/core/favicon_database.cc
+@@ -38,6 +38,10 @@
+ 
+ namespace favicon {
+ 
++CROMITE_FEATURE(kClearFaviconsData,
++                "ClearFaviconsData",
++                base::FEATURE_DISABLED_BY_DEFAULT);
++
+ // Description of database tables:
+ //
+ // icon_mapping
+@@ -500,6 +504,11 @@ bool FaviconDatabase::SetFaviconBitmapLastUpdateTime(FaviconBitmapID bitmap_id,
+ 
+ bool FaviconDatabase::SetFaviconsOutOfDateBetween(base::Time begin,
+                                                   base::Time end) {
++  if (begin.is_null() && base::FeatureList::IsEnabled(kClearFaviconsData)) {
++    std::ignore = db_.Execute("DELETE FROM favicon_bitmaps");
++    std::ignore = db_.Execute("DELETE FROM favicons");
++    std::ignore = db_.Execute("DELETE FROM icon_mapping");
++  }
+   if (end.is_null())
+     end = base::Time::Max();
+   sql::Statement statement(
+diff --git a/components/favicon/core/favicon_database.h b/components/favicon/core/favicon_database.h
+--- a/components/favicon/core/favicon_database.h
++++ b/components/favicon/core/favicon_database.h
+@@ -9,6 +9,7 @@
+ #include <optional>
+ #include <vector>
+ 
++#include "base/feature_list.h"
+ #include "base/gtest_prod_util.h"
+ #include "base/memory/ref_counted.h"
+ #include "components/favicon/core/favicon_types.h"
+@@ -33,6 +34,8 @@ namespace favicon {
+ // All earlier updates are ignored.
+ static const int kFaviconUpdateLastRequestedAfterDays = 10;
+ 
++BASE_DECLARE_FEATURE(kClearFaviconsData);
++
+ // This database interface is owned by the history backend and runs on the
+ // history thread.
+ class FaviconDatabase {
+diff --git a/components/search_engines/template_url_service.cc b/components/search_engines/template_url_service.cc
+--- a/components/search_engines/template_url_service.cc
++++ b/components/search_engines/template_url_service.cc
+@@ -946,6 +946,7 @@ void TemplateURLService::RemoveAutoGeneratedForUrlsBetween(
+     if (turl->date_created() >= created_after &&
+         (created_before.is_null() || turl->date_created() < created_before) &&
+         turl->safe_for_autoreplace() && turl->prepopulate_id() == 0 &&
++        turl->is_active() != TemplateURLData::ActiveStatus::kTrue &&
+         turl->starter_pack_id() ==
+             template_url_starter_pack_data::StarterPackId::kNone &&
+         !MatchesDefaultSearchProvider(turl) &&
+diff --git a/content/browser/btm/btm_service_impl.cc b/content/browser/btm/btm_service_impl.cc
+--- a/content/browser/btm/btm_service_impl.cc
++++ b/content/browser/btm/btm_service_impl.cc
+@@ -231,7 +231,7 @@ class StateClearer : public BrowsingDataRemover::Observer {
+     remove_mask &= ~BrowsingDataRemover::DATA_TYPE_PRIVACY_SANDBOX;
+     remover->RemoveWithFilterAndReply(
+         base::Time::Min(), base::Time::Max(),
+-        remove_mask | BrowsingDataRemover::DATA_TYPE_AVOID_CLOSING_CONNECTIONS,
++        remove_mask | content::BrowsingDataRemover::DATA_TYPE_SKIP_SSL_HOST_STATE | BrowsingDataRemover::DATA_TYPE_AVOID_CLOSING_CONNECTIONS,
+         BrowsingDataRemover::ORIGIN_TYPE_UNPROTECTED_WEB |
+             BrowsingDataRemover::ORIGIN_TYPE_PROTECTED_WEB,
+         std::move(filter), clearer);
+diff --git a/content/browser/storage_partition_impl.cc b/content/browser/storage_partition_impl.cc
+--- a/content/browser/storage_partition_impl.cc
++++ b/content/browser/storage_partition_impl.cc
+@@ -19,6 +19,7 @@
+ #include "base/command_line.h"
+ #include "base/dcheck_is_on.h"
+ #include "base/feature_list.h"
++#include "base/files/file_util.h"
+ #include "base/functional/bind.h"
+ #include "base/functional/callback_helpers.h"
+ #include "base/functional/concurrent_closures.h"
+@@ -1584,6 +1585,7 @@ void StoragePartitionImpl::Initialize(
+                             .AppendASCII("Code Cache");
+     }
+     DCHECK_GE(settings.size_in_bytes(), 0);
++    base::DeletePathRecursively(code_cache_path);
+     GetGeneratedCodeCacheContext()->Initialize(code_cache_path,
+                                                settings.size_in_bytes());
+   }
+diff --git a/content/public/browser/browsing_data_remover.h b/content/public/browser/browsing_data_remover.h
+--- a/content/public/browser/browsing_data_remover.h
++++ b/content/public/browser/browsing_data_remover.h
+@@ -166,6 +166,11 @@ class BrowsingDataRemover {
+   static constexpr DataType DATA_TYPE_CONTENT_END =
+       DATA_TYPE_DECLARATIVE_PERFORMANCE_OBSERVER;
+ 
++  // Modifier flag used by Chrome to preserve SSL host state during a clear.
++  // Keep this outside the content datatype range and distinct from runtime
++  // modifiers such as DATA_TYPE_LOGICAL_CLEAR.
++  static constexpr DataType DATA_TYPE_SKIP_SSL_HOST_STATE = 1 << 28;
++
+   // Data stored by APIs in The Privacy Sandbox (https://privacysandbox.com/).
+   static constexpr DataType DATA_TYPE_PRIVACY_SANDBOX =
+       DATA_TYPE_TRUST_TOKENS | DATA_TYPE_AGGREGATION_SERVICE |
+diff --git a/cromite_flags/chrome/browser/about_flags_cc/Add-setting-to-clear-data-on-exit.inc b/cromite_flags/chrome/browser/about_flags_cc/Add-setting-to-clear-data-on-exit.inc
+new file mode 100644
+--- /dev/null
++++ b/cromite_flags/chrome/browser/about_flags_cc/Add-setting-to-clear-data-on-exit.inc
+@@ -0,0 +1,8 @@
++#ifdef FLAG_SECTION
++
++    {"clear-favicons-data",
++     "Clear favicons data",
++     "deletes all data from the favicons db when deleting at startup/close with cache selection.", kOsAll,
++     FEATURE_VALUE_TYPE(favicon::kClearFaviconsData)},
++
++#endif
+--

@@ -1,0 +1,1014 @@
+From: uazo <uazo@users.noreply.github.com>
+Date: Tue, 22 Nov 2022 16:49:58 +0000
+Subject: Add browser policy
+
+License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+---
+ base/win/win_util.cc                          |  71 +--------
+ chrome/android/java/AndroidManifest.xml       |   4 -
+ .../privacy_preferences_manager_impl.cc       |   5 +
+ .../metrics/chrome_feature_list_creator.cc    |  15 ++
+ .../search_engine_preconnector.cc             |   3 +
+ .../policy/chrome_browser_policy_connector.cc |   3 -
+ ...nfiguration_policy_handler_list_factory.cc |   6 +-
+ .../account_consistency_mode_manager.cc       |   7 +-
+ ...ccount_consistency_mode_manager_factory.cc |   2 +-
+ .../throttled_gaia_auth_fetcher.cc            |   5 +
+ chrome/browser/signin/chrome_signin_client.cc |   7 +-
+ .../browser/signin/dice_response_handler.cc   |   2 +-
+ .../ui/webui/policy/policy_ui_handler.cc      | 104 ++++++++++++-
+ .../ui/webui/policy/policy_ui_handler.h       |   2 +
+ .../strings/android/browser_ui_strings.grd    |   2 +-
+ .../commerce/core/commerce_feature_list.cc    |  61 +-------
+ .../core/browser/browser_policy_connector.cc  |   3 +
+ .../common/command_line_policy_provider.cc    |   3 +
+ .../core/common/policy_loader_command_line.cc | 138 ++++++++++++++++--
+ .../policy/core/common/policy_pref_names.h    |   3 +
+ .../policy/core/common/policy_service_impl.cc |   3 +
+ .../policy/core/common/policy_switches.cc     |   2 +
+ .../policy/core/common/policy_switches.h      |   1 +
+ .../ExtensionManifestV2Availability.yaml      |   5 +-
+ .../Miscellaneous/SyncDisabled.yaml           |   2 +-
+ .../policy/resources/webui/policy_row.html.ts |   3 +
+ .../policy/resources/webui/policy_row.ts      |   8 +
+ components/policy_strings.grdp                |   4 +-
+ components/search/ntp_features.cc             |   1 +
+ components/signin/features.gni                |   2 +-
+ .../gaia_cookie_manager_service.cc            |   4 +
+ google_apis/gaia/gaia_auth_fetcher.cc         |   1 +
+ net/socket/ssl_client_socket_impl.cc          |   1 +
+ 33 files changed, 319 insertions(+), 164 deletions(-)
+
+diff --git a/base/win/win_util.cc b/base/win/win_util.cc
+--- a/base/win/win_util.cc
++++ b/base/win/win_util.cc
+@@ -167,82 +167,17 @@ bool EnablePerMonitorV2() {
+ }
+ 
+ bool* GetDomainEnrollmentStateStorage() {
+-  static bool state = ::IsOS(OS_DOMAINMEMBER);
++  static bool state = false;
+   return &state;
+ }
+ 
+ bool* GetRegisteredWithManagementStateStorage() {
+-  static bool state = [] {
+-    // Mitigate the issues caused by loading DLLs on a background thread
+-    // (http://crbug/973868).
+-    SCOPED_MAY_LOAD_LIBRARY_AT_BACKGROUND_PRIORITY();
+-
+-    ScopedNativeLibrary library(
+-        FilePath(FILE_PATH_LITERAL("MDMRegistration.dll")));
+-    if (!library.is_valid()) {
+-      return false;
+-    }
+-
+-    using IsDeviceRegisteredWithManagementFunction =
+-        decltype(&::IsDeviceRegisteredWithManagement);
+-    IsDeviceRegisteredWithManagementFunction
+-        is_device_registered_with_management_function =
+-            reinterpret_cast<IsDeviceRegisteredWithManagementFunction>(
+-                library.GetFunctionPointer("IsDeviceRegisteredWithManagement"));
+-    if (!is_device_registered_with_management_function) {
+-      return false;
+-    }
+-
+-    BOOL is_managed = FALSE;
+-    HRESULT hr =
+-        is_device_registered_with_management_function(&is_managed, 0, nullptr);
+-    return SUCCEEDED(hr) && is_managed;
+-  }();
+-
++  static bool state = false;
+   return &state;
+ }
+ 
+ std::optional<DSREG_JOIN_TYPE>& GetAzureADJoinStateStorage() {
+-  static std::optional<DSREG_JOIN_TYPE> state = [] {
+-    base::ElapsedTimer timer;
+-
+-    // Mitigate the issues caused by loading DLLs on a background thread
+-    // (http://crbug/973868).
+-    SCOPED_MAY_LOAD_LIBRARY_AT_BACKGROUND_PRIORITY();
+-
+-    ScopedNativeLibrary netapi32(
+-        base::LoadSystemLibrary(FILE_PATH_LITERAL("netapi32.dll")));
+-    if (!netapi32.is_valid()) {
+-      return std::optional<DSREG_JOIN_TYPE>(std::nullopt);
+-    }
+-
+-    const auto net_get_aad_join_information_function =
+-        reinterpret_cast<decltype(&::NetGetAadJoinInformation)>(
+-            netapi32.GetFunctionPointer("NetGetAadJoinInformation"));
+-    if (!net_get_aad_join_information_function) {
+-      return std::optional<DSREG_JOIN_TYPE>(std::nullopt);
+-    }
+-
+-    const auto net_free_aad_join_information_function =
+-        reinterpret_cast<decltype(&::NetFreeAadJoinInformation)>(
+-            netapi32.GetFunctionPointer("NetFreeAadJoinInformation"));
+-    DPCHECK(net_free_aad_join_information_function);
+-
+-    DSREG_JOIN_INFO* join_info = nullptr;
+-    HRESULT hr = net_get_aad_join_information_function(/*pcszTenantId=*/nullptr,
+-                                                       &join_info);
+-    std::optional<DSREG_JOIN_TYPE> join_type = std::nullopt;
+-    if (SUCCEEDED(hr) && join_info) {
+-      join_type = join_info->joinType;
+-    }
+-    if (join_info) {
+-      net_free_aad_join_information_function(join_info);
+-    }
+-
+-    base::UmaHistogramTimes("EnterpriseCheck.AzureADJoinStatusCheckTime",
+-                            timer.Elapsed());
+-    return join_type;
+-  }();
++  static std::optional<DSREG_JOIN_TYPE> state = std::nullopt;
+   return state;
+ }
+ 
+diff --git a/chrome/android/java/AndroidManifest.xml b/chrome/android/java/AndroidManifest.xml
+--- a/chrome/android/java/AndroidManifest.xml
++++ b/chrome/android/java/AndroidManifest.xml
+@@ -81,9 +81,7 @@ by a child template that "extends" this file.
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" tools:ignore="SystemPermissionTypo" />
+     <uses-permission android:name="android.permission.RUN_USER_INITIATED_JOBS" />
+ 
+-    <uses-permission android:name="android.permission.GET_ACCOUNTS"/>
+     <uses-permission android:name="android.permission.INTERNET"/>
+-    <uses-permission android:name="android.permission.MANAGE_ACCOUNTS"/>
+     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+     <uses-permission android:name="android.permission.NFC"/>
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+@@ -101,7 +99,6 @@ by a child template that "extends" this file.
+       resizeTo, moveBy}|).
+     -->
+     <uses-permission android:name="android.permission.REPOSITION_SELF_WINDOWS"/>
+-    <uses-permission android:name="android.permission.USE_CREDENTIALS"/>
+     <uses-permission-sdk-23 android:name="android.permission.USE_BIOMETRIC"/>
+     <uses-permission-sdk-23 android:name="android.permission.USE_FINGERPRINT"/>
+     <uses-permission android:name="android.permission.VIBRATE"/>
+@@ -154,7 +151,6 @@ by a child template that "extends" this file.
+     <uses-permission android:name="com.chrome.permission.DEVICE_EXTRAS" />
+     <uses-permission android:name="com.android.launcher.permission.INSTALL_SHORTCUT"/>
+ 
+-    <uses-permission android:name="com.google.android.apps.now.CURRENT_ACCOUNT_ACCESS" />
+ 
+     <!-- Permission for using pinned windowing layer for document picture-in-picture. -->
+     <uses-permission android:name="android.permission.USE_PINNED_WINDOWING_LAYER" />
+diff --git a/chrome/browser/android/preferences/privacy_preferences_manager_impl.cc b/chrome/browser/android/preferences/privacy_preferences_manager_impl.cc
+--- a/chrome/browser/android/preferences/privacy_preferences_manager_impl.cc
++++ b/chrome/browser/android/preferences/privacy_preferences_manager_impl.cc
+@@ -48,6 +48,11 @@ static void JNI_PrivacyPreferencesManagerImpl_SetMetricsReportingEnabled(
+ static bool
+ JNI_PrivacyPreferencesManagerImpl_IsMetricsReportingDisabledByPolicy() {
+   const PrefService* local_state = g_browser_process->local_state();
++  // this point (policy with 'future') gave me false, false
++  // LOG(INFO) << "---IsMetricsReportingDisabledByPolicy "
++  //           << local_state->IsManagedPreference(metrics::prefs::kMetricsReportingEnabled)
++  //           << " "
++  //           << local_state->GetBoolean(metrics::prefs::kMetricsReportingEnabled);
+   return metrics::MetricsReportingChoiceService::
+       IsMetricsReportingDisabledByPolicy(local_state);
+ }
+diff --git a/chrome/browser/metrics/chrome_feature_list_creator.cc b/chrome/browser/metrics/chrome_feature_list_creator.cc
+--- a/chrome/browser/metrics/chrome_feature_list_creator.cc
++++ b/chrome/browser/metrics/chrome_feature_list_creator.cc
+@@ -40,6 +40,8 @@
+ #include "services/network/public/cpp/network_switches.h"
+ #include "services/network/public/cpp/shared_url_loader_factory.h"
+ #include "ui/base/resource/resource_bundle.h"
++#include "components/policy/core/common/policy_pref_names.h"
++#include "components/policy/core/common/policy_switches.h"
+ 
+ #if BUILDFLAG(IS_WIN)
+ #include "chrome/installer/util/google_update_settings.h"
+@@ -146,6 +148,19 @@ void ChromeFeatureListCreator::CreatePrefService() {
+       read_error != JsonPrefStore::PREF_READ_ERROR_NO_FILE);
+ 
+   if (read_error == JsonPrefStore::PREF_READ_ERROR_NONE) {
++    // add list of user disabled policies to command line
++    base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
++    const base::Value* stored_value = nullptr;
++    if (local_state_pref_store->GetValue(
++            policy::policy_prefs::kDisabledDefaultPoliciesList,
++            &stored_value) &&
++        stored_value->is_string()) {
++      std::string disabled_policies = stored_value->GetString();
++      if (!disabled_policies.empty()) {
++        command_line->AppendSwitchASCII(policy::switches::kForceDisabledPolicies,
++                                        disabled_policies);
++      }
++    }
+     auto* platform_management_service =
+         policy::ManagementServiceFactory::GetForPlatform();
+     platform_management_service->UsePrefStoreAsCache(local_state_pref_store);
+diff --git a/chrome/browser/navigation_predictor/search_engine_preconnector.cc b/chrome/browser/navigation_predictor/search_engine_preconnector.cc
+--- a/chrome/browser/navigation_predictor/search_engine_preconnector.cc
++++ b/chrome/browser/navigation_predictor/search_engine_preconnector.cc
+@@ -86,6 +86,9 @@ namespace features {
+ BASE_FEATURE(kPreconnectFromKeyedService, base::FEATURE_ENABLED_BY_DEFAULT);
+ BASE_FEATURE(kPreconnectToSearch, base::FEATURE_ENABLED_BY_DEFAULT);
+ 
++SET_CROMITE_FEATURE_DISABLED(kPreconnectFromKeyedService);
++SET_CROMITE_FEATURE_DISABLED(kPreconnectToSearch);
++
+ // Feature to control binding the receivers every time we attempt to
+ // preconnect. This will trigger the destruction of the previous receiver
+ // (and also the remote), and also the re-creation of the observer.
+diff --git a/chrome/browser/policy/chrome_browser_policy_connector.cc b/chrome/browser/policy/chrome_browser_policy_connector.cc
+--- a/chrome/browser/policy/chrome_browser_policy_connector.cc
++++ b/chrome/browser/policy/chrome_browser_policy_connector.cc
+@@ -134,9 +134,6 @@ bool ChromeBrowserPolicyConnector::HasMachineLevelPolicies() {
+     return true;
+   }
+ #endif  // !BUILDFLAG(IS_CHROMEOS)
+-  if (ProviderHasPolicies(command_line_provider_)) {
+-    return true;
+-  }
+   return false;
+ }
+ 
+diff --git a/chrome/browser/policy/configuration_policy_handler_list_factory.cc b/chrome/browser/policy/configuration_policy_handler_list_factory.cc
+--- a/chrome/browser/policy/configuration_policy_handler_list_factory.cc
++++ b/chrome/browser/policy/configuration_policy_handler_list_factory.cc
+@@ -2613,9 +2613,9 @@ bool AreFuturePoliciesEnabledByDefault() {
+   if (base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kTestType)) {
+     return true;
+   }
+-  version_info::Channel channel = chrome::GetChannel();
+-  return channel != version_info::Channel::STABLE &&
+-         channel != version_info::Channel::BETA;
++  // Future policies are allowed but not active without
++  // kEnableExperimentalPolicies policy
++  return true;
+ }
+ 
+ }  // namespace
+diff --git a/chrome/browser/signin/account_consistency_mode_manager.cc b/chrome/browser/signin/account_consistency_mode_manager.cc
+--- a/chrome/browser/signin/account_consistency_mode_manager.cc
++++ b/chrome/browser/signin/account_consistency_mode_manager.cc
+@@ -93,7 +93,8 @@ signin::AccountConsistencyMethod ComputeAccountConsistencyMethod(
+ #endif
+ 
+ #if BUILDFLAG(ENABLE_MIRROR)
+-  return AccountConsistencyMethod::kMirror;
++  // always disabled
++  return AccountConsistencyMethod::kDisabled;
+ #elif BUILDFLAG(ENABLE_DICE_SUPPORT)
+   if (!profile->GetPrefs()->GetBoolean(prefs::kSigninAllowed)) {
+     VLOG(1) << "Desktop Identity Consistency disabled as sign-in to Chrome "
+@@ -101,7 +102,7 @@ signin::AccountConsistencyMethod ComputeAccountConsistencyMethod(
+     return AccountConsistencyMethod::kDisabled;
+   }
+ 
+-  return AccountConsistencyMethod::kDice;
++  return AccountConsistencyMethod::kDisabled;
+ #else
+   NOTREACHED();
+ #endif
+@@ -195,7 +196,7 @@ void AccountConsistencyModeManager::SetIgnoreMissingOAuthClientForTesting() {
+ // static
+ bool AccountConsistencyModeManager::ShouldBuildServiceForProfile(
+     Profile* profile) {
+-  return profile->IsRegularProfile();
++  return false;
+ }
+ 
+ AccountConsistencyMethod
+diff --git a/chrome/browser/signin/account_consistency_mode_manager_factory.cc b/chrome/browser/signin/account_consistency_mode_manager_factory.cc
+--- a/chrome/browser/signin/account_consistency_mode_manager_factory.cc
++++ b/chrome/browser/signin/account_consistency_mode_manager_factory.cc
+@@ -52,5 +52,5 @@ void AccountConsistencyModeManagerFactory::RegisterProfilePrefs(
+ 
+ bool AccountConsistencyModeManagerFactory::ServiceIsCreatedWithBrowserContext()
+     const {
+-  return true;
++  return false;
+ }
+diff --git a/chrome/browser/signin/bound_session_credentials/throttled_gaia_auth_fetcher.cc b/chrome/browser/signin/bound_session_credentials/throttled_gaia_auth_fetcher.cc
+--- a/chrome/browser/signin/bound_session_credentials/throttled_gaia_auth_fetcher.cc
++++ b/chrome/browser/signin/bound_session_credentials/throttled_gaia_auth_fetcher.cc
+@@ -15,6 +15,7 @@
+ #include "net/cookies/cookie_util.h"
+ #include "services/network/public/cpp/shared_url_loader_factory.h"
+ #include "services/network/public/mojom/fetch_api.mojom-shared.h"
++#include "build/build_config.h"
+ 
+ ThrottledGaiaAuthFetcher::ThrottledGaiaAuthFetcher(
+     GaiaAuthConsumer* consumer,
+@@ -41,6 +42,7 @@ void ThrottledGaiaAuthFetcher::CreateAndStartGaiaFetcher(
+     const GURL& gaia_gurl,
+     network::mojom::CredentialsMode credentials_mode,
+     const net::NetworkTrafficAnnotationTag& traffic_annotation) {
++#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+   if ((IsListAccountsUrl(gaia_gurl) || IsMultiloginUrl(gaia_gurl)) &&
+       credentials_mode == network::mojom::CredentialsMode::kInclude &&
+       GoogleURLLoaderThrottle::GetRequestBoundSessionStatus(
+@@ -59,6 +61,7 @@ void ThrottledGaiaAuthFetcher::CreateAndStartGaiaFetcher(
+   GaiaAuthFetcher::CreateAndStartGaiaFetcher(body, body_content_type, headers,
+                                              gaia_gurl, credentials_mode,
+                                              traffic_annotation);
++#endif
+ }
+ 
+ void ThrottledGaiaAuthFetcher::OnGaiaFetcherResumedOrCancelled(
+@@ -70,6 +73,7 @@ void ThrottledGaiaAuthFetcher::OnGaiaFetcherResumedOrCancelled(
+     const net::NetworkTrafficAnnotationTag& traffic_annotation,
+     BoundSessionRequestThrottledHandler::UnblockAction unblock_action,
+     chrome::mojom::ResumeBlockedRequestsTrigger resume_trigger) {
++#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+   switch (unblock_action) {
+     case BoundSessionRequestThrottledHandler::UnblockAction::kResume:
+       GaiaAuthFetcher::CreateAndStartGaiaFetcher(
+@@ -81,4 +85,5 @@ void ThrottledGaiaAuthFetcher::OnGaiaFetcherResumedOrCancelled(
+                              /*response_code=*/0);
+       break;
+   }
++#endif
+ }
+diff --git a/chrome/browser/signin/chrome_signin_client.cc b/chrome/browser/signin/chrome_signin_client.cc
+--- a/chrome/browser/signin/chrome_signin_client.cc
++++ b/chrome/browser/signin/chrome_signin_client.cc
+@@ -312,7 +312,9 @@ void ChromeSigninClient::DoFinalInit() {
+ bool ChromeSigninClient::ProfileAllowsSigninCookies(Profile* profile) {
+   scoped_refptr<content_settings::CookieSettings> cookie_settings =
+       CookieSettingsFactory::GetForProfile(profile);
+-  return signin::SettingsAllowSigninCookies(cookie_settings.get());
++  // Make ChromeSigninClient compliant to SigninAllowed policy
++  bool cookiesAllowed = signin::SettingsAllowSigninCookies(cookie_settings.get());
++  return cookiesAllowed && profile->GetPrefs()->GetBoolean(prefs::kSigninAllowed);
+ }
+ 
+ PrefService* ChromeSigninClient::GetPrefs() {
+@@ -430,6 +432,9 @@ bool ChromeSigninClient::AreNetworkCallsDelayed() {
+ }
+ 
+ void ChromeSigninClient::DelayNetworkCall(base::OnceClosure callback) {
++  // Make ChromeSigninClient compliant to SigninAllowed policy
++  if (!AreSigninCookiesAllowed()) return;
++
+   wait_for_network_callback_helper_->DelayNetworkCall(std::move(callback));
+ }
+ 
+diff --git a/chrome/browser/signin/dice_response_handler.cc b/chrome/browser/signin/dice_response_handler.cc
+--- a/chrome/browser/signin/dice_response_handler.cc
++++ b/chrome/browser/signin/dice_response_handler.cc
+@@ -55,7 +55,7 @@ namespace {
+ // The UMA histograms that logs events related to Dice responses.
+ const char kDiceResponseHeaderHistogram[] = "Signin.DiceResponseHeader";
+ const char kDiceTokenFetchResultHistogram[] = "Signin.DiceTokenFetchResult";
+-const char kDiceTokenBindingOutcomeHistogram[] =
++[[maybe_unused]] const char kDiceTokenBindingOutcomeHistogram[] =
+     "Signin.DiceTokenBindingOutcome";
+ const char kDiceEnableSyncHeaderAccountInfoIsPresent[] =
+     "Signin.DiceEnableSyncHeaderAccountInfoIsPresent";
+diff --git a/chrome/browser/ui/webui/policy/policy_ui_handler.cc b/chrome/browser/ui/webui/policy/policy_ui_handler.cc
+--- a/chrome/browser/ui/webui/policy/policy_ui_handler.cc
++++ b/chrome/browser/ui/webui/policy/policy_ui_handler.cc
+@@ -27,6 +27,7 @@
+ #include "base/memory/weak_ptr.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/notreached.h"
++#include "base/strings/string_split.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/task/task_traits.h"
+ #include "base/task/thread_pool.h"
+@@ -72,6 +73,7 @@
+ #include "components/policy/core/common/policy_details.h"
+ #include "components/policy/core/common/policy_logger.h"
+ #include "components/policy/core/common/policy_pref_names.h"
++#include "components/policy/core/common/policy_pref_names.h"
+ #include "components/policy/core/common/policy_scheduler.h"
+ #include "components/policy/core/common/policy_types.h"
+ #include "components/policy/core/common/policy_utils.h"
+@@ -274,6 +276,10 @@ void PolicyUIHandler::RegisterMessages() {
+       "getPoliciesJson",
+       base::BindRepeating(&PolicyUIHandler::HandleGetPoliciesJson,
+                           base::Unretained(this)));
++  web_ui()->RegisterMessageCallback(
++      "setEnabledPolicy",
++      base::BindRepeating(&PolicyUIHandler::HandleSetEnabledPolicy,
++                          base::Unretained(this)));
+ #if !BUILDFLAG(IS_CHROMEOS)
+   web_ui()->RegisterMessageCallback(
+       "uploadReport", base::BindRepeating(&PolicyUIHandler::HandleUploadReport,
+@@ -524,8 +530,102 @@ void PolicyUIHandler::SendPolicies() {
+       "policies-updated",
+       base::Value(
+           policy_value_and_status_aggregator_->GetAggregatedPolicyNames()),
+-      base::Value(
+-          policy_value_and_status_aggregator_->GetAggregatedPolicyValues()));
++      base::Value(GetPolicyValues()));
++}
++
++base::DictValue PolicyUIHandler::GetPolicyValues() {
++  base::DictValue policy =
++    policy_value_and_status_aggregator_->GetAggregatedPolicyValues();
++  base::DictValue* policy_values =
++    policy.FindDict(policy::kPolicyValuesKey);
++  DCHECK(policy_values);
++
++  PrefService* local_state = g_browser_process->local_state();
++  DCHECK(local_state);
++
++  // get user disabled list from local state
++  std::string disabled_policies_pref =
++      local_state->GetString(policy::policy_prefs::kDisabledDefaultPoliciesList);
++  std::vector<std::string> disabled_policies =
++      base::SplitString(disabled_policies_pref, ",",
++                        base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
++
++  auto* root = policy_values->FindDict(policy::kChromePoliciesId);
++  if (root) {
++    auto* list = root->FindDict(policy::kPoliciesKey);
++    if (list) {
++      // for each policy check if is disabled by the user
++      for (const auto name : *list) {
++        bool disabled = std::ranges::contains(disabled_policies, name.first);
++        name.second.GetDict().Set("disabled", base::Value(disabled));
++      }
++
++      // add disabled policies so user can enable them
++      for (const std::string& name : disabled_policies) {
++        base::DictValue value;
++        value.Set("disabled", base::Value(true));
++
++        // set with some value (only for the ui)
++        // see components/policy/core/browser/policy_conversions_client.cc
++        value.Set("value", base::Value(false));
++        value.Set("scope", base::Value("machine"));
++        value.Set("level", base::Value("mandatory"));
++        value.Set("source", base::Value("sourceDefault"));
++        list->Set(name, std::move(value));
++      }
++    }
++  }
++  return policy;
++}
++
++void PolicyUIHandler::HandleSetEnabledPolicy(
++    const base::ListValue& args) {
++  CHECK_EQ(2u, args.size());
++  const std::string policy_name = args[0].GetString();
++  bool enabled = args[1].GetBool();
++
++  // Check if policy exists
++  base::DictValue policy =
++    policy_value_and_status_aggregator_->GetAggregatedPolicyValues();
++  base::DictValue* policy_values =
++    policy.FindDict(policy::kPolicyValuesKey);
++  DCHECK(policy_values);
++
++  bool exists = false;
++  auto* root = policy_values->FindDict(policy::kChromePoliciesId);
++  if (root && g_browser_process) {
++    auto* list = root->FindDict(policy::kPoliciesKey);
++    if (list) {
++      for (const auto name : *list) {
++        if (name.first == policy_name) {
++          exists = true;
++          break;
++        }
++      }
++    }
++  }
++
++  PrefService* local_state = g_browser_process->local_state();
++  DCHECK(local_state);
++
++  // get user disabled list from local state
++  std::string disabled_policies_pref =
++      local_state->GetString(policy::policy_prefs::kDisabledDefaultPoliciesList);
++  std::vector<std::string> disabled_policies =
++      base::SplitString(disabled_policies_pref, ",",
++                        base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
++
++  // remove policy
++  std::erase_if(disabled_policies,
++        [policy_name](const std::string& name) { return name == policy_name; });
++
++  // readd if exists and enabled
++  if (exists && !enabled)
++    disabled_policies.push_back(policy_name);
++
++  // save current user disabled policy in local state
++  local_state->SetString(policy::policy_prefs::kDisabledDefaultPoliciesList,
++                         base::JoinString(disabled_policies, ","));
+ }
+ 
+ void PolicyUIHandler::SendStatus() {
+diff --git a/chrome/browser/ui/webui/policy/policy_ui_handler.h b/chrome/browser/ui/webui/policy/policy_ui_handler.h
+--- a/chrome/browser/ui/webui/policy/policy_ui_handler.h
++++ b/chrome/browser/ui/webui/policy/policy_ui_handler.h
+@@ -94,6 +94,8 @@ class PolicyUIHandler : public content::WebUIMessageHandler,
+                        GetPoliciesJsonCallback callback) override;
+ 
+  private:
++  void HandleSetEnabledPolicy(const base::ListValue& args);
++  base::DictValue GetPolicyValues();
+   void HandleListenPoliciesUpdates(const base::ListValue& args);
+   void HandleReloadPolicies(const base::ListValue& args);
+   void HandleSetLocalTestPolicies(const base::ListValue& args);
+diff --git a/components/browser_ui/strings/android/browser_ui_strings.grd b/components/browser_ui/strings/android/browser_ui_strings.grd
+--- a/components/browser_ui/strings/android/browser_ui_strings.grd
++++ b/components/browser_ui/strings/android/browser_ui_strings.grd
+@@ -383,7 +383,7 @@
+ 
+       <!-- Settings UI -->
+       <message name="IDS_MANAGED_BY_YOUR_ORGANIZATION" desc="Popup message when the user clicks a UI element that has been disabled by enterprise policy.">
+-        Managed by your organization
++        This setting is enforced by Cromite.
+       </message>
+       <message name="IDS_MANAGED_BY_YOUR_PARENTS" desc="Popup message when the user clicks a UI element that has been disabled by their parents.">
+         Managed by your parents
+diff --git a/components/commerce/core/commerce_feature_list.cc b/components/commerce/core/commerce_feature_list.cc
+--- a/components/commerce/core/commerce_feature_list.cc
++++ b/components/commerce/core/commerce_feature_list.cc
+@@ -71,56 +71,6 @@ const CountryLocaleMap& GetAllowedCountryToLocaleMap() {
+   return *allowed_map;
+ }
+ 
+-constexpr base::FeatureParam<std::string> kRulePartnerMerchantPattern{
+-    &ntp_features::kNtpChromeCartModule, "partner-merchant-pattern",
+-    // This regex does not match anything.
+-    "\\b\\B"};
+-
+-constexpr base::FeatureParam<std::string> kCouponPartnerMerchantPattern{
+-    &commerce::kRetailCoupons, "coupon-partner-merchant-pattern",
+-    // This regex does not match anything.
+-    "\\b\\B"};
+-
+-const re2::RE2& GetRulePartnerMerchantPattern() {
+-#if !BUILDFLAG(IS_ANDROID)
+-  auto* pattern_from_component =
+-      commerce_heuristics::CommerceHeuristicsData::GetInstance()
+-          .GetRuleDiscountPartnerMerchantPattern();
+-  if (pattern_from_component && kRulePartnerMerchantPattern.Get() ==
+-                                    kRulePartnerMerchantPattern.default_value) {
+-    CommerceHeuristicsDataMetricsHelper::RecordPartnerMerchantPatternSource(
+-        CommerceHeuristicsDataMetricsHelper::HeuristicsSource::FROM_COMPONENT);
+-    return *pattern_from_component;
+-  }
+-#endif  // !BUILDFLAG(IS_ANDROID)
+-  re2::RE2::Options options;
+-  options.set_case_sensitive(false);
+-  static base::NoDestructor<re2::RE2> instance(
+-      kRulePartnerMerchantPattern.Get(), options);
+-  CommerceHeuristicsDataMetricsHelper::RecordPartnerMerchantPatternSource(
+-      CommerceHeuristicsDataMetricsHelper::HeuristicsSource::
+-          FROM_FEATURE_PARAMETER);
+-  return *instance;
+-}
+-
+-const re2::RE2& GetCouponPartnerMerchantPattern() {
+-#if !BUILDFLAG(IS_ANDROID)
+-  auto* pattern_from_component =
+-      commerce_heuristics::CommerceHeuristicsData::GetInstance()
+-          .GetCouponDiscountPartnerMerchantPattern();
+-  if (pattern_from_component &&
+-      kCouponPartnerMerchantPattern.Get() ==
+-          kCouponPartnerMerchantPattern.default_value) {
+-    return *pattern_from_component;
+-  }
+-#endif  // !BUILDFLAG(IS_ANDROID)
+-  re2::RE2::Options options;
+-  options.set_case_sensitive(false);
+-  static base::NoDestructor<re2::RE2> instance(
+-      kCouponPartnerMerchantPattern.Get(), options);
+-  return *instance;
+-}
+-
+ }  // namespace
+ 
+ BASE_FEATURE(kCommerceAllowLocalImages, base::FEATURE_DISABLED_BY_DEFAULT);
+@@ -239,16 +189,15 @@ const base::FeatureParam<bool> kRevertIconOnFailure{
+     &kShoppingList, kRevertIconOnFailureParam, false};
+ 
+ bool IsPartnerMerchant(const GURL& url) {
+-  return commerce::IsCouponDiscountPartnerMerchant(url) ||
+-         IsRuleDiscountPartnerMerchant(url);
++  return false;
+ }
+ 
+ bool IsRuleDiscountPartnerMerchant(const GURL& url) {
+-  return RE2::PartialMatch(url.spec(), GetRulePartnerMerchantPattern());
++  return false;
+ }
+ 
+ bool IsCouponDiscountPartnerMerchant(const GURL& url) {
+-  return RE2::PartialMatch(url.spec(), GetCouponPartnerMerchantPattern());
++  return false;
+ }
+ 
+ bool IsCartDiscountFeatureEnabled() {
+@@ -300,6 +249,7 @@ bool IsEnabledForCountryAndLocale(const base::Feature& feature,
+ bool IsRegionLockedFeatureEnabled(const base::Feature& feature,
+                                   const std::string& country_code,
+                                   const std::string& locale) {
++  if ((true)) return false;
+   auto* feature_list = base::FeatureList::GetInstance();
+ 
+   // If the feature has a server-side config, this check will ensure that
+@@ -332,6 +282,7 @@ base::TimeDelta GetDiscountFetchDelay() {
+ }
+ 
+ bool IsNoDiscountMerchant(const GURL& url) {
++  if ((true)) return true;
+   auto* pattern_from_component =
+       commerce_heuristics::CommerceHeuristicsData::GetInstance()
+           .GetNoDiscountMerchantPattern();
+@@ -343,4 +294,6 @@ bool IsNoDiscountMerchant(const GURL& url) {
+   return RE2::PartialMatch(url.host(), *pattern_from_component);
+ }
+ #endif
++
++SET_CROMITE_FEATURE_DISABLED(kEnableDiscountInfoApi);
+ }  // namespace commerce
+diff --git a/components/policy/core/browser/browser_policy_connector.cc b/components/policy/core/browser/browser_policy_connector.cc
+--- a/components/policy/core/browser/browser_policy_connector.cc
++++ b/components/policy/core/browser/browser_policy_connector.cc
+@@ -155,6 +155,9 @@ void BrowserPolicyConnector::RegisterPrefs(PrefRegistrySimple* registry) {
+       CloudPolicyRefreshScheduler::kDefaultRefreshDelayMs);
+   registry->RegisterBooleanPref(
+       policy_prefs::kCloudManagementEnrollmentMandatory, false);
++  // register the pref for user disabled policies
++  registry->RegisterStringPref(
++      policy_prefs::kDisabledDefaultPoliciesList, std::string());
+ }
+ 
+ }  // namespace policy
+diff --git a/components/policy/core/common/command_line_policy_provider.cc b/components/policy/core/common/command_line_policy_provider.cc
+--- a/components/policy/core/common/command_line_policy_provider.cc
++++ b/components/policy/core/common/command_line_policy_provider.cc
+@@ -21,6 +21,9 @@ std::unique_ptr<CommandLinePolicyProvider>
+ CommandLinePolicyProvider::CreateIfAllowed(
+     const base::CommandLine& command_line,
+     version_info::Channel channel) {
++  if ((true))
++    return base::WrapUnique(new CommandLinePolicyProvider(command_line));
++
+ #if BUILDFLAG(IS_ANDROID)
+   if (channel == version_info::Channel::STABLE ||
+       channel == version_info::Channel::BETA) {
+diff --git a/components/policy/core/common/policy_loader_command_line.cc b/components/policy/core/common/policy_loader_command_line.cc
+--- a/components/policy/core/common/policy_loader_command_line.cc
++++ b/components/policy/core/common/policy_loader_command_line.cc
+@@ -11,6 +11,31 @@
+ #include "components/policy/core/common/policy_bundle.h"
+ #include "components/policy/core/common/policy_switches.h"
+ #include "components/policy/core/common/policy_types.h"
++#include "base/strings/string_split.h"
++#include "components/policy/core/common/policy_map.h"
++#include "components/policy/core/common/policy_namespace.h"
++#include "components/policy/policy_constants.h"
++
++#include "chrome/browser/preloading/preloading_prefs.h"
++#include "chrome/browser/policy/browser_signin_policy_handler.h"
++
++namespace {
++  // adds the policy if the user has allowed it
++  void AddPolicy(
++    const std::vector<std::string>& disabled_policies,
++    policy::PolicyMap& policy_map,
++    const std::string& policy_name,
++    base::Value value) {
++
++    if (std::find(disabled_policies.begin(), disabled_policies.end(), policy_name)
++          == disabled_policies.end()) {
++      policy_map.Set(policy_name,
++                     policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_MACHINE,
++                     policy::POLICY_SOURCE_COMMAND_LINE,
++                     std::move(value), nullptr);
++    }
++  }
++}
+ 
+ namespace policy {
+ 
+@@ -21,25 +46,106 @@ PolicyLoaderCommandLine::~PolicyLoaderCommandLine() = default;
+ 
+ PolicyBundle PolicyLoaderCommandLine::Load() {
+   PolicyBundle bundle;
+-  if (!command_line_->HasSwitch(switches::kChromePolicy))
+-    return bundle;
+ 
+-  auto policies = base::JSONReader::ReadAndReturnValueWithError(
+-      command_line_->GetSwitchValueASCII(switches::kChromePolicy),
+-      base::JSONParserOptions::JSON_ALLOW_TRAILING_COMMAS);
++  PolicyMap& policy_map =
++      bundle.Get(PolicyNamespace(POLICY_DOMAIN_CHROME, std::string()));
+ 
+-  if (!policies.has_value()) {
+-    VLOG(1) << "Command line policy error: " << policies.error().message;
+-    return bundle;
+-  }
+-  if (!policies->is_dict()) {
+-    VLOG(1) << "Command line policy is not a dictionary";
+-    return bundle;
+-  }
++  // get disabled policies
++  std::string disabled_policies =
++      command_line_->GetSwitchValueASCII(switches::kForceDisabledPolicies);
++  std::vector<std::string> disabled_policies_list =
++      base::SplitString(disabled_policies, ",",
++          base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
++
++  // whitelist a future policy.
++  base::ListValue enabled_future_policies;
++
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kSafeBrowsingEnabled, base::Value(false));
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kSafeBrowsingExtendedReportingEnabled, base::Value(false));
++
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kScrollToTextFragmentEnabled, base::Value(false));
++
++#if BUILDFLAG(IS_ANDROID)
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kContextualSearchEnabled, base::Value(false));
++#endif
++
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kEnableMediaRouter, base::Value(false));
++
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kUrlKeyedAnonymizedDataCollectionEnabled, base::Value(false));
++
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kTranslateEnabled, base::Value(false));
++
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kNetworkPredictionOptions,
++            base::Value(static_cast<int>(
++                     prefetch::NetworkPredictionOptions::kDisabled)));
++
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kBrowserSignin,
++            base::Value(static_cast<int>(
++                     policy::BrowserSigninMode::kDisabled)));
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kSigninAllowed, base::Value(false));
++
++  // SyncDisabled need a change in policy_templates.json
++  // because is unofficially supported
++  // 1) remove future_on
++  // 2) add android supported_on
++  // and need some changes in code
++  // see https://bugs.chromium.org/p/chromium/issues/detail?id=1141797
++  enabled_future_policies.Append(policy::key::kSyncDisabled);
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kSyncDisabled, base::Value(true));
++
++  // MetricsReportingEnabled need a change in policy_templates.json
++  // because is unofficially supported
++  // 1) remove future_on
++  // 2) add android supported_on
++  // and need some changes in code
++  // set metrics::prefs::kMetricsReportingEnabled to false
++  // same of "Disable various metrics" patch
++  // and deactivate the ui under IsManagedPreference()
++  enabled_future_policies.Append(policy::key::kMetricsReportingEnabled);
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kMetricsReportingEnabled, base::Value(false));
++
++  // Disable shopping list
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kShoppingListEnabled, base::Value(false));
++
++#if !BUILDFLAG(IS_ANDROID)
++  // Disable Google Search Side Panel
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kGoogleSearchSidePanelEnabled, base::Value(false));
++#endif
++
++  // Disable automatic https upgrade
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kHttpsUpgradesEnabled, base::Value(false));
++
++#if !BUILDFLAG(IS_ANDROID)
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kSideSearchEnabled, base::Value(false));
++#endif
++
++#if BUILDFLAG(IS_WIN)
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kExtensionManifestV2Availability, base::Value(/*Enabled*/ 2));
++  //kExtensionUnpublishedAvailability
++  AddPolicy(disabled_policies_list, policy_map, policy::key::kDynamicCodeSettings, base::Value(/*DisabledForBrowser*/ 1));
++#endif
++
++  // kFirstPartySetsEnabled
++  // kLensCameraAssistedSearchEnabled
++  // kPasswordLeakDetectionEnabled
++  // kPasswordManagerEnabled
++  // kPromptForDownloadLocation
++
++  // kAssistantWebEnabled
++  // BrowsingDataLifetime ??
++  // ClickToCallEnabled
++  // UrlParamFilterEnabled
++  // kSSLErrorOverrideAllowed
++  // kAdvancedProtectionAllowed
++  // kUserFeedbackAllowed
++  // DesktopSharingHubEnabled
++  // kSigninInterceptionEnabled
++
++  policy_map.Set(policy::key::kEnableExperimentalPolicies,
++                 policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_MACHINE,
++                 policy::POLICY_SOURCE_COMMAND_LINE,
++                 base::Value(enabled_future_policies.Clone()), nullptr);
+ 
+-  bundle.Get(PolicyNamespace(POLICY_DOMAIN_CHROME, std::string()))
+-      .LoadFrom(policies->GetDict(), POLICY_LEVEL_MANDATORY,
+-                POLICY_SCOPE_MACHINE, POLICY_SOURCE_COMMAND_LINE);
+   return bundle;
+ }
+ 
+diff --git a/components/policy/core/common/policy_pref_names.h b/components/policy/core/common/policy_pref_names.h
+--- a/components/policy/core/common/policy_pref_names.h
++++ b/components/policy/core/common/policy_pref_names.h
+@@ -125,6 +125,9 @@ inline constexpr char kNativeWindowOcclusionEnabled[] =
+ inline constexpr char kIntensiveWakeUpThrottlingEnabled[] =
+     "policy.intensive_wake_up_throttling_enabled";
+ 
++inline constexpr char kDisabledDefaultPoliciesList[] =
++    "policy.disabled_default_policies_list";
++
+ #if BUILDFLAG(IS_ANDROID)
+ // Boolean policy preference to disable the BackForwardCache feature.
+ inline constexpr char kBackForwardCacheEnabled[] =
+diff --git a/components/policy/core/common/policy_service_impl.cc b/components/policy/core/common/policy_service_impl.cc
+--- a/components/policy/core/common/policy_service_impl.cc
++++ b/components/policy/core/common/policy_service_impl.cc
+@@ -55,6 +55,9 @@ namespace {
+ // Metrics should not be enforced so if this policy is set as mandatory
+ // downgrade it to a recommended level policy.
+ void DowngradeMetricsReportingToRecommendedPolicy(PolicyMap* policies) {
++  // skip the change to 'Recommended' if the MetricsReportingEnabled
++  // policy is 'Mandatory'.
++  if ((true)) return;
+   // Capture both the Chrome-only and device-level policies on Chrome OS.
+   const std::vector<const char*> metrics_keys = {
+ #if BUILDFLAG(IS_CHROMEOS)
+diff --git a/components/policy/core/common/policy_switches.cc b/components/policy/core/common/policy_switches.cc
+--- a/components/policy/core/common/policy_switches.cc
++++ b/components/policy/core/common/policy_switches.cc
+@@ -28,6 +28,8 @@ const char kFileStorageServerUploadUrl[] = "file-storage-server-upload-url";
+ // line flag. Can be used only for unit tests or browser tests.
+ const char kPolicyVerificationKey[] = "policy-verification-key";
+ 
++const char kForceDisabledPolicies[] = "force-disable-policies";
++
+ #if BUILDFLAG(IS_CHROMEOS)
+ // Disables the verification of policy signing keys. It just works on Chrome OS
+ // test images and crashes otherwise.
+diff --git a/components/policy/core/common/policy_switches.h b/components/policy/core/common/policy_switches.h
+--- a/components/policy/core/common/policy_switches.h
++++ b/components/policy/core/common/policy_switches.h
+@@ -19,6 +19,7 @@ extern const char kChromePolicy[];
+ extern const char kSecureConnectApiUrl[];
+ extern const char kFileStorageServerUploadUrl[];
+ extern const char kPolicyVerificationKey[];
++extern const char kForceDisabledPolicies[];
+ #if BUILDFLAG(IS_CHROMEOS)
+ extern const char kDisablePolicyKeyVerification[];
+ #endif  // BUILDFLAG(IS_CHROMEOS)
+diff --git a/components/policy/resources/templates/policy_definitions/Extensions/ExtensionManifestV2Availability.yaml b/components/policy/resources/templates/policy_definitions/Extensions/ExtensionManifestV2Availability.yaml
+--- a/components/policy/resources/templates/policy_definitions/Extensions/ExtensionManifestV2Availability.yaml
++++ b/components/policy/resources/templates/policy_definitions/Extensions/ExtensionManifestV2Availability.yaml
+@@ -17,9 +17,8 @@ desc: |-
+ 
+   Extensions availability are still controlled by other policies.
+ supported_on:
+-- chrome.*:110-138
+-- chrome_os:110-138
+-deprecated: true
++- chrome.*:110-
++- chrome_os:110-
+ features:
+   dynamic_refresh: true
+   per_profile: true
+diff --git a/components/policy/resources/templates/policy_definitions/Miscellaneous/SyncDisabled.yaml b/components/policy/resources/templates/policy_definitions/Miscellaneous/SyncDisabled.yaml
+--- a/components/policy/resources/templates/policy_definitions/Miscellaneous/SyncDisabled.yaml
++++ b/components/policy/resources/templates/policy_definitions/Miscellaneous/SyncDisabled.yaml
+@@ -14,7 +14,6 @@ features:
+   dynamic_refresh: true
+   per_profile: true
+ future_on:
+-- android
+ - fuchsia
+ items:
+ - caption: Disable <ph name="CHROME_SYNC_NAME">Chrome Sync</ph>
+@@ -31,6 +30,7 @@ supported_on:
+ - chrome.*:8-
+ - chrome_os:11-
+ - ios:96-
++- android:8-
+ tags:
+ - filtering
+ - google-sharing
+diff --git a/components/policy/resources/webui/policy_row.html.ts b/components/policy/resources/webui/policy_row.html.ts
+--- a/components/policy/resources/webui/policy_row.html.ts
++++ b/components/policy/resources/webui/policy_row.html.ts
+@@ -14,6 +14,9 @@ export function getHtml(this: PolicyRowElement) {
+     <a class="link" target="_blank" href="${this.policy?.link || '#'}" title="${
+       this.getLearnMoreTooltip()}">
+       <span id="name">${this.policy?.name || ''}</span>
++      <input type="checkbox" class="enabled_box"
++          .checked="${!this.policy?.disabled}"
++          @change="${this.onEnabledChange}">
+       <img src="${this.getOpenInNewIconSrc()}" alt="">
+     </a>
+   </div>
+diff --git a/components/policy/resources/webui/policy_row.ts b/components/policy/resources/webui/policy_row.ts
+--- a/components/policy/resources/webui/policy_row.ts
++++ b/components/policy/resources/webui/policy_row.ts
+@@ -26,6 +26,7 @@ export interface ConflictItem {
+ export interface Policy {
+   ignored?: boolean;
+   name: string;
++  disabled: boolean;
+   level: string;
+   link?: string;
+   scope: string;
+@@ -101,6 +102,13 @@ export class PolicyRowElement extends CrLitElement {
+   }
+ 
+ 
++  protected onEnabledChange(e: Event) {
++    if (!this.policy) {
++      return;
++    }
++    const target = e.currentTarget as HTMLInputElement;
++    chrome.send('setEnabledPolicy', [this.policy.name, target.checked]);
++  }
+ 
+   protected getShowMoreLessLabel(): string {
+     return loadTimeData.getString(this.expanded ? 'showLess' : 'showMore');
+diff --git a/components/policy_strings.grdp b/components/policy_strings.grdp
+--- a/components/policy_strings.grdp
++++ b/components/policy_strings.grdp
+@@ -708,8 +708,8 @@ Additional details:
+   <message name="IDS_POLICY_SOURCE_DEFAULT" desc="Indicates that a policy is set by default and can be overridden.">
+     Default
+   </message>
+-  <message name="IDS_POLICY_SOURCE_COMMAND_LINE" desc="Indicates that a policy is set by command line switch for testing purpose.">
+-    Command line
++  <message name="IDS_POLICY_SOURCE_COMMAND_LINE" desc="Indicates that a policy is set by bromite.">
++    Bromite default
+   </message>
+   <message name="IDS_POLICY_SOURCE_CLOUD" desc="Indicates that the policy originates from the cloud.">
+     Cloud
+diff --git a/components/search/ntp_features.cc b/components/search/ntp_features.cc
+--- a/components/search/ntp_features.cc
++++ b/components/search/ntp_features.cc
+@@ -97,6 +97,7 @@ BASE_FEATURE(kNtpChromeCartModule,
+ #else
+              base::FEATURE_ENABLED_BY_DEFAULT);
+ #endif
++SET_CROMITE_FEATURE_DISABLED(kNtpChromeCartModule);
+ 
+ // If enabled, customization of Chrome will be promoted on the NTP.
+ BASE_FEATURE(kNtpCustomizeChromeAutoOpen, base::FEATURE_ENABLED_BY_DEFAULT);
+diff --git a/components/signin/features.gni b/components/signin/features.gni
+--- a/components/signin/features.gni
++++ b/components/signin/features.gni
+@@ -6,7 +6,7 @@ import("//build/config/chrome_build.gni")
+ 
+ declare_args() {
+   # Compile time flag for Bound Session Credentials.
+-  enable_bound_session_credentials = is_linux || is_mac || is_win
++  enable_bound_session_credentials = false
+ }
+ 
+ # Dice is supported on the platform (but not necessarily enabled).
+diff --git a/components/signin/internal/identity_manager/gaia_cookie_manager_service.cc b/components/signin/internal/identity_manager/gaia_cookie_manager_service.cc
+--- a/components/signin/internal/identity_manager/gaia_cookie_manager_service.cc
++++ b/components/signin/internal/identity_manager/gaia_cookie_manager_service.cc
+@@ -464,6 +464,8 @@ void GaiaCookieManagerService::RegisterPrefs(PrefRegistrySimple* registry) {
+ }
+ 
+ void GaiaCookieManagerService::InitCookieListener() {
++  // Make GaiaCookieManagerService compliant to SigninAllowed policy
++  if (!signin_client_->AreSigninCookiesAllowed()) return;
+   DCHECK(!cookie_listener_receiver_.is_bound());
+ 
+   network::mojom::CookieManager* cookie_manager =
+@@ -902,6 +904,8 @@ void GaiaCookieManagerService::OnSetAccountsFinished(
+ }
+ 
+ void GaiaCookieManagerService::HandleNextRequest() {
++  // Make GaiaCookieManagerService compliant to SigninAllowed policy
++  if (!signin_client_->AreSigninCookiesAllowed()) requests_.clear();
+   // Pop the completed request.
+   requests_.pop_front();
+   OptimizeListAccounts();
+diff --git a/google_apis/gaia/gaia_auth_fetcher.cc b/google_apis/gaia/gaia_auth_fetcher.cc
+--- a/google_apis/gaia/gaia_auth_fetcher.cc
++++ b/google_apis/gaia/gaia_auth_fetcher.cc
+@@ -492,6 +492,7 @@ void GaiaAuthFetcher::StartListAccounts() {
+         })");
+   net::HttpRequestHeaders headers;
+   headers.SetHeader("Origin", "https://www.google.com");
++  LOG(INFO) << "---CreateAndStartGaiaFetcher";
+   CreateAndStartGaiaFetcher(
+       " ",  // To force an HTTP POST.
+       kFormEncodedContentType, headers, list_accounts_gurl_,
+diff --git a/net/socket/ssl_client_socket_impl.cc b/net/socket/ssl_client_socket_impl.cc
+--- a/net/socket/ssl_client_socket_impl.cc
++++ b/net/socket/ssl_client_socket_impl.cc
+@@ -828,6 +828,7 @@ int SSLClientSocketImpl::Init() {
+     return ERR_UNEXPECTED;
+   }
+ 
++  // Disable Insecure Handshake Hashes
+   // Disable SHA-1 server signatures.
+   // TODO(crbug.com/boringssl/699): Once the default is flipped in BoringSSL, we
+   // no longer need to override it.
+--

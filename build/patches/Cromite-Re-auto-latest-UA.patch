@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Cromite Re Bot <cromite-re-bot@users.noreply.github.com>
+Date: Thu, 1 Jan 1970 00:00:00 +0000
+Subject: [PATCH] Cromite Re: default to latest Chrome Android UA
+
+Keep Cromite's existing User-Agent customization UI, but make the mobile
+override enabled by default and seed it with the latest generated Chrome
+Android User-Agent.
+
+If an older profile still contains an empty mobile override, migrate it to
+the generated value. Explicit non-empty custom User-Agent values remain
+untouched.
+---
+ chrome/browser/android/preferences/browser_prefs_android.cc | 4 ++--
+ chrome/browser/android/preferences/privacy_preferences_manager_impl.cc | 6 +++++-
+ 2 files changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/chrome/browser/android/preferences/browser_prefs_android.cc b/chrome/browser/android/preferences/browser_prefs_android.cc
+--- a/chrome/browser/android/preferences/browser_prefs_android.cc
++++ b/chrome/browser/android/preferences/browser_prefs_android.cc
+@@ -20,8 +20,8 @@ void RegisterPrefs(PrefRegistrySimple* registry) {
+   RegisterClipboardAndroidPrefs(registry);
+   readaloud::RegisterLocalPrefs(registry);
+   webauthn::authenticator::RegisterLocalState(registry);
+ 
+-  registry->RegisterBooleanPref(prefs::kOverrideUserAgentEnabled, false);
+-  registry->RegisterStringPref(prefs::kOverrideUserAgent, "");
++  registry->RegisterBooleanPref(prefs::kOverrideUserAgentEnabled, true);
++  registry->RegisterStringPref(prefs::kOverrideUserAgent, "Mozilla/5.0 (Linux; Android 17; Pixel 11 Pro XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.8037.21 Mobile Safari/537.36");
+   registry->RegisterBooleanPref(prefs::kOverrideUserAgentDesktopModeEnabled, false);
+   registry->RegisterStringPref(prefs::kOverrideUserAgentDesktopMode, "");
+   registry->RegisterBooleanPref(prefs::kDesktopModeViewportMetaEnabled, false);
+diff --git a/chrome/browser/android/preferences/privacy_preferences_manager_impl.cc b/chrome/browser/android/preferences/privacy_preferences_manager_impl.cc
+--- a/chrome/browser/android/preferences/privacy_preferences_manager_impl.cc
++++ b/chrome/browser/android/preferences/privacy_preferences_manager_impl.cc
+@@ -61,7 +61,11 @@ static void UpdateOverrideUserAgent() {
+   std::string ua = g_browser_process->local_state()->GetString(prefs::kOverrideUserAgent);
+   if (ua.empty()) {
+-    ua = ChromeContentBrowserClient().GetUserAgent();
++    ua = "Mozilla/5.0 (Linux; Android 17; Pixel 11 Pro XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.8037.21 Mobile Safari/537.36";
++    g_browser_process->local_state()->SetString(prefs::kOverrideUserAgent, ua);
++    g_browser_process->local_state()->SetBoolean(prefs::kOverrideUserAgentEnabled, true);
++    overrideUserAgentEnabled = true;
+   }
+ 
+   base::CommandLine* parsed_command_line = base::CommandLine::ForCurrentProcess();
+--
+2.43.0
