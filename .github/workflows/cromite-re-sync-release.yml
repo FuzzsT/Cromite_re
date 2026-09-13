@@ -1,5 +1,6 @@
 name: Cromite Re Sync
 
+# A successful sync triggers the separate Cromite Re Build Release workflow.
 on:
   push:
     branches: [main]
