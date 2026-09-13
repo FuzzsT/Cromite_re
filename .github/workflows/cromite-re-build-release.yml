@@ -1,0 +1,151 @@
+name: Cromite Re Build Release
+
+on:
+  workflow_run:
+    workflows: ['Cromite Re Sync']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Read sync metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          data = json.loads(Path('build/CROMITE_RE_SYNC.json').read_text(encoding='utf-8'))
+          for key in ('upstream_sha', 'cromite_version', 'chrome_stable', 'chrome_major', 'ua_mode'):
+              print(f'{key}={data[key]}')
+          PY
+          cat build/CROMITE_RE_SYNC.json
+
+      - name: Reclaim disk space
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /usr/local/.ghcup || true
+          docker system prune -af || true
+          df -h
+
+      - name: Pull matching upstream Cromite build image
+        id: image
+        run: |
+          set -euo pipefail
+          IMAGE="uazo/cromite-build:${{ steps.meta.outputs.cromite_version }}-${{ steps.meta.outputs.upstream_sha }}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "Using $IMAGE"
+          for attempt in 1 2 3; do
+            if docker pull "$IMAGE"; then
+              exit 0
+            fi
+            echo "Image not ready yet (attempt $attempt/3)"
+            sleep 60
+          done
+          echo "Unable to pull $IMAGE" >&2
+          exit 1
+
+      - name: Start build container
+        run: |
+          set -euo pipefail
+          docker create \
+            --name cromite-re-build \
+            -e WORKSPACE=/home/lg/working_dir \
+            -e HOME=/home/lg/working_dir \
+            -e TARGET_ISDEBUG=false \
+            --entrypoint tail \
+            '${{ steps.image.outputs.image }}' -f /dev/null
+          docker start cromite-re-build
+
+      - name: Apply latest Chrome Pixel UA patch
+        run: |
+          set -euo pipefail
+          docker cp build/patches/Cromite-Re-auto-latest-UA.patch \
+            cromite-re-build:/tmp/Cromite-Re-auto-latest-UA.patch
+          docker exec cromite-re-build bash -lc '
+            set -euo pipefail
+            cd /home/lg/working_dir/chromium/src
+            git apply --check /tmp/Cromite-Re-auto-latest-UA.patch
+            git apply /tmp/Cromite-Re-auto-latest-UA.patch
+          '
+
+      - name: Build ARM64 APK
+        run: |
+          set -euo pipefail
+          docker exec \
+            -e WORKSPACE=/home/lg/working_dir \
+            -e HOME=/home/lg/working_dir \
+            -e TARGET_ISDEBUG=false \
+            cromite-re-build bash -lc '
+              set -euo pipefail
+              export PATH="$WORKSPACE/chromium/src/third_party/llvm-build/Release+Asserts/bin:$WORKSPACE/depot_tools/:/usr/local/go/bin:$WORKSPACE/mtool/bin:$PATH"
+              cd "$WORKSPACE/chromium/src"
+              gn gen --args="target_os = \"android\" $(cat "$WORKSPACE/cromite/build/cromite.gn_args") target_cpu = \"arm64\"" out/arm64
+              python3 "$WORKSPACE/depot_tools/siso.py" ninja -C out/arm64 chrome_public_apk --offline
+            '
+
+      - name: Export APK and checksum
+        run: |
+          set -euo pipefail
+          docker cp \
+            cromite-re-build:/home/lg/working_dir/chromium/src/out/arm64/apks/ChromePublic.apk \
+            ./Cromite-Re-arm64.apk
+          test -s Cromite-Re-arm64.apk
+          sha256sum Cromite-Re-arm64.apk | tee Cromite-Re-arm64.apk.sha256
+
+      - name: Prepare release notes
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('build/CROMITE_RE_SYNC.json').read_text(encoding='utf-8'))
+          Path('release-notes.md').write_text(
+              'Cromite Re automated ARM64 build.\n\n'
+              f"Upstream: {data['upstream_repository']}@{data['upstream_sha']}\n"
+              f"Cromite base: {data['cromite_version']}\n"
+              f"Chrome Android Stable UA: {data['chrome_stable']}\n"
+              f"UA mode: {data['ua_mode']}\n"
+              f"User-Agent: `{data['user_agent']}`\n",
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA="$(printf '%s' '${{ steps.meta.outputs.upstream_sha }}' | cut -c1-8)"
+          TAG="cromite-re-${{ steps.meta.outputs.cromite_version }}-ua${{ steps.meta.outputs.chrome_major }}-${SHORT_SHA}"
+          TITLE="Cromite Re ${{ steps.meta.outputs.cromite_version }} - Chrome UA ${{ steps.meta.outputs.chrome_major }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" Cromite-Re-arm64.apk Cromite-Re-arm64.apk.sha256 --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes-file release-notes.md
+          else
+            gh release create "$TAG" \
+              Cromite-Re-arm64.apk Cromite-Re-arm64.apk.sha256 \
+              --target main \
+              --title "$TITLE" \
+              --notes-file release-notes.md
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f cromite-re-build 2>/dev/null || true
