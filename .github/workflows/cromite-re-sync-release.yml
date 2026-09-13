@@ -36,6 +36,31 @@ jobs:
       - name: Generate latest Pixel UA patch
         run: python3 .cromite-re/generate_auto_ua.py --repo . --profile pixel
 
+      - name: Write sync metadata
+        run: |
+          python3 - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          upstream = Path(__import__('os').environ['RUNNER_TEMP']) / 'cromite-upstream'
+          sha = subprocess.check_output(['git', '-C', str(upstream), 'rev-parse', 'HEAD'], text=True).strip()
+          version = Path('build/RELEASE').read_text(encoding='utf-8').strip()
+          ua = json.loads(Path('build/CROMITE_RE_UA.json').read_text(encoding='utf-8'))
+          data = {
+              'upstream_repository': 'uazo/cromite',
+              'upstream_branch': 'master',
+              'upstream_sha': sha,
+              'cromite_version': version,
+              'chrome_stable': ua['chrome_stable'],
+              'chrome_major': ua['chrome_major'],
+              'ua_mode': ua['mode'],
+              'user_agent': ua['user_agent'],
+          }
+          Path('build/CROMITE_RE_SYNC.json').write_text(json.dumps(data, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          print(json.dumps(data, indent=2))
+          PY
+
       - name: Commit sync
         run: |
           git config user.name 'Cromite Re Bot'
