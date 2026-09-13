@@ -1,6 +1,7 @@
 name: Cromite Re Sync
 
 # A successful sync triggers the separate Cromite Re Build Release workflow.
+# Build workflow can fall back to the matching public uazo/chromium image.
 on:
   push:
     branches: [main]
