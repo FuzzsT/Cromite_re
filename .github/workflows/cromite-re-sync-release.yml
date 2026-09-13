@@ -1,73 +1,31 @@
-name: Cromite Re - Sync + Pixel UA + Release
+name: Cromite Re Sync
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - '.github/workflows/cromite-re-sync-release.yml'
       - '.cromite-re/**'
-      - 'README-CROMITE-RE.md'
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
-    inputs:
-      build_release:
-        description: 'Build and publish the ARM64 APK'
-        required: true
-        default: true
-        type: boolean
-      ua_profile:
-        description: 'UA profile'
-        required: true
-        default: 'pixel'
-        type: choice
-        options:
-          - pixel
-          - reduced
 
 permissions:
   contents: write
 
-env:
-  UPSTREAM_REPOSITORY: uazo/cromite
-  UPSTREAM_BRANCH: master
-
-concurrency:
-  group: cromite-re-sync-release
-  cancel-in-progress: false
-
 jobs:
   sync:
-    name: Sync upstream and refresh UA
     runs-on: ubuntu-latest
-    outputs:
-      changed: ${{ steps.commit.outputs.changed }}
-      upstream_sha: ${{ steps.meta.outputs.upstream_sha }}
-      cromite_version: ${{ steps.meta.outputs.cromite_version }}
-      chrome_version: ${{ steps.meta.outputs.chrome_version }}
-      chrome_major: ${{ steps.meta.outputs.chrome_major }}
-      user_agent: ${{ steps.meta.outputs.user_agent }}
-      ua_mode: ${{ steps.meta.outputs.ua_mode }}
-
     steps:
-      - name: Checkout Cromite Re
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Clone current uazo/cromite
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --branch "$UPSTREAM_BRANCH" \
-            "https://github.com/$UPSTREAM_REPOSITORY.git" \
-            "$RUNNER_TEMP/cromite-upstream"
+      - name: Clone upstream
+        run: git clone --depth 1 --branch master https://github.com/uazo/cromite.git "$RUNNER_TEMP/cromite-upstream"
 
-      - name: Mirror upstream while preserving Cromite Re automation
-        shell: bash
+      - name: Mirror upstream
         run: |
-          set -euo pipefail
           rsync -a --delete \
             --exclude='.git/' \
             --exclude='.cromite-re/' \
@@ -75,212 +33,16 @@ jobs:
             --exclude='README-CROMITE-RE.md' \
             "$RUNNER_TEMP/cromite-upstream/" ./
 
-      - name: Resolve requested UA profile
-        id: profile
-        shell: bash
-        run: |
-          set -euo pipefail
-          PROFILE='pixel'
-          if [ "${{ github.event_name }}" = 'workflow_dispatch' ]; then
-            PROFILE='${{ inputs.ua_profile }}'
-          fi
-          echo "profile=$PROFILE" >> "$GITHUB_OUTPUT"
+      - name: Generate latest Pixel UA patch
+        run: python3 .cromite-re/generate_auto_ua.py --repo . --profile pixel
 
-      - name: Fetch latest Chrome Android Stable and generate UA patch
-        shell: bash
+      - name: Commit sync
         run: |
-          set -euo pipefail
-          python3 .cromite-re/generate_auto_ua.py \
-            --repo . \
-            --profile '${{ steps.profile.outputs.profile }}'
-
-      - name: Collect build metadata
-        id: meta
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "upstream_sha=$(git -C "$RUNNER_TEMP/cromite-upstream" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "cromite_version=$(tr -d '\r\n' < build/RELEASE)" >> "$GITHUB_OUTPUT"
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          from pathlib import Path
-          data = json.loads(Path('build/CROMITE_RE_UA.json').read_text(encoding='utf-8'))
-          print('chrome_version=' + data['chrome_stable'])
-          print('chrome_major=' + data['chrome_major'])
-          print('user_agent=' + data['user_agent'])
-          print('ua_mode=' + data['mode'])
-          PY
-
-      - name: Commit synchronized source and generated UA patch
-        id: commit
-        shell: bash
-        run: |
-          set -euo pipefail
           git config user.name 'Cromite Re Bot'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
-
           if git diff --cached --quiet; then
-            echo 'No upstream or UA changes detected.'
-            echo 'changed=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
-          git commit -m "sync: upstream ${{ steps.meta.outputs.upstream_sha }} + Chrome UA ${{ steps.meta.outputs.chrome_version }}"
+          git commit -m "sync: upstream + latest Chrome Pixel UA"
           git push origin HEAD:main
-          echo 'changed=true' >> "$GITHUB_OUTPUT"
-
-  build_release:
-    name: Build ARM64 APK and publish release
-    needs: sync
-    if: >-
-      (github.event_name == 'schedule' && needs.sync.outputs.changed == 'true') ||
-      (github.event_name == 'push' && needs.sync.outputs.changed == 'true') ||
-      (github.event_name == 'workflow_dispatch' && inputs.build_release)
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-
-    steps:
-      - name: Checkout synchronized main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 1
-
-      - name: Reclaim disk space
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sudo rm -rf /usr/local/lib/android || true
-          sudo rm -rf /usr/share/dotnet || true
-          sudo rm -rf /opt/ghc || true
-          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
-          sudo rm -rf /usr/local/.ghcup || true
-          docker system prune -af || true
-          df -h
-
-      - name: Pull matching upstream Cromite build image
-        id: image
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION='${{ needs.sync.outputs.cromite_version }}'
-          UPSTREAM_SHA='${{ needs.sync.outputs.upstream_sha }}'
-          IMAGE="uazo/cromite-build:${VERSION}-${UPSTREAM_SHA}"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "Using $IMAGE"
-
-          for attempt in 1 2 3; do
-            if docker pull "$IMAGE"; then
-              exit 0
-            fi
-            echo "Image not ready yet (attempt $attempt/3)."
-            sleep 60
-          done
-
-          echo "Expected upstream image is unavailable: $IMAGE" >&2
-          exit 1
-
-      - name: Start build container and apply Cromite Re UA patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          IMAGE='${{ steps.image.outputs.image }}'
-          docker create \
-            --name cromite-re-build \
-            -e WORKSPACE=/home/lg/working_dir \
-            -e HOME=/home/lg/working_dir \
-            -e TARGET_ISDEBUG=false \
-            --entrypoint tail \
-            "$IMAGE" -f /dev/null
-          docker start cromite-re-build
-          docker cp build/patches/Cromite-Re-auto-latest-UA.patch \
-            cromite-re-build:/tmp/Cromite-Re-auto-latest-UA.patch
-
-          docker exec cromite-re-build bash -lc '
-            set -euo pipefail
-            cd /home/lg/working_dir/chromium/src
-            git apply --check /tmp/Cromite-Re-auto-latest-UA.patch
-            git apply /tmp/Cromite-Re-auto-latest-UA.patch
-          '
-
-      - name: Build Cromite ARM64 APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker exec \
-            -e WORKSPACE=/home/lg/working_dir \
-            -e HOME=/home/lg/working_dir \
-            -e TARGET_ISDEBUG=false \
-            cromite-re-build bash -lc '
-              set -euo pipefail
-              export PATH="$WORKSPACE/chromium/src/third_party/llvm-build/Release+Asserts/bin:$WORKSPACE/depot_tools/:/usr/local/go/bin:$WORKSPACE/mtool/bin:$PATH"
-              cd "$WORKSPACE/chromium/src"
-              gn gen --args="target_os = \"android\" $(cat "$WORKSPACE/cromite/build/cromite.gn_args") target_cpu = \"arm64\"" out/arm64
-              python3 "$WORKSPACE/depot_tools/siso.py" ninja -C out/arm64 chrome_public_apk --offline
-            '
-
-      - name: Export and verify APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker cp \
-            cromite-re-build:/home/lg/working_dir/chromium/src/out/arm64/apks/ChromePublic.apk \
-            ./arm64_ChromePublic.apk
-          test -s arm64_ChromePublic.apk
-          sha256sum arm64_ChromePublic.apk | tee arm64_ChromePublic.apk.sha256
-          ls -lh arm64_ChromePublic.apk arm64_ChromePublic.apk.sha256
-
-      - name: Prepare release notes
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          meta = json.loads(Path('build/CROMITE_RE_UA.json').read_text(encoding='utf-8'))
-          notes = f'''Cromite Re automated ARM64 build.
-
-Upstream uazo/cromite commit: ${{ needs.sync.outputs.upstream_sha }}
-Cromite Chromium base: ${{ needs.sync.outputs.cromite_version }}
-Chrome Android Stable used for UA: {meta['chrome_stable']}
-UA mode: {meta['mode']}
-Device profile: {meta.get('device') or 'Chrome reduced UA'}
-Android profile: {meta.get('android') or 'reduced'}
-User-Agent: `{meta['user_agent']}`
-
-The Chrome version is refreshed from Google's VersionHistory service on every sync. Explicit non-empty custom UA values in Cromite remain user-controlled.
-'''
-          Path('release-notes.md').write_text(notes, encoding='utf-8')
-          PY
-
-      - name: Create or refresh GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION='${{ needs.sync.outputs.cromite_version }}'
-          CHROME_MAJOR='${{ needs.sync.outputs.chrome_major }}'
-          SHORT_SHA="$(printf '%s' '${{ needs.sync.outputs.upstream_sha }}' | cut -c1-8)"
-          TAG="cromite-re-${VERSION}-ua${CHROME_MAJOR}-${SHORT_SHA}"
-          TITLE="Cromite Re ${VERSION} - Chrome UA ${CHROME_MAJOR}"
-
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" \
-              arm64_ChromePublic.apk arm64_ChromePublic.apk.sha256 \
-              --clobber
-            gh release edit "$TAG" --title "$TITLE" --notes-file release-notes.md
-          else
-            gh release create "$TAG" \
-              arm64_ChromePublic.apk arm64_ChromePublic.apk.sha256 \
-              --target main \
-              --title "$TITLE" \
-              --notes-file release-notes.md
-          fi
-
-      - name: Stop build container
-        if: always()
-        shell: bash
-        run: |
-          docker rm -f cromite-re-build 2>/dev/null || true
