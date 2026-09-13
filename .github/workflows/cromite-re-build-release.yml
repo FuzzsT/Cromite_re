@@ -45,21 +45,34 @@ jobs:
           docker system prune -af || true
           df -h
 
-      - name: Pull matching upstream Cromite build image
+      - name: Select build image with Chromium fallback
         id: image
         run: |
           set -euo pipefail
-          IMAGE="uazo/cromite-build:${{ steps.meta.outputs.cromite_version }}-${{ steps.meta.outputs.upstream_sha }}"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "Using $IMAGE"
+          VERSION='${{ steps.meta.outputs.cromite_version }}'
+          SHA='${{ steps.meta.outputs.upstream_sha }}'
+          EXACT="uazo/cromite-build:${VERSION}-${SHA}"
+
+          echo "Trying upstream ready-to-build image: $EXACT"
+          if docker pull "$EXACT"; then
+            echo "image=$EXACT" >> "$GITHUB_OUTPUT"
+            echo "mode=upstream" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BASE="uazo/chromium:${VERSION}"
+          echo "Exact Cromite build image is unavailable; falling back to $BASE"
           for attempt in 1 2 3; do
-            if docker pull "$IMAGE"; then
+            if docker pull "$BASE"; then
+              echo "image=$BASE" >> "$GITHUB_OUTPUT"
+              echo "mode=chromium-fallback" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "Image not ready yet (attempt $attempt/3)"
-            sleep 60
+            echo "Base Chromium image pull failed (attempt $attempt/3)"
+            sleep 30
           done
-          echo "Unable to pull $IMAGE" >&2
+
+          echo "Neither $EXACT nor $BASE could be pulled" >&2
           exit 1
 
       - name: Start build container
@@ -74,7 +87,44 @@ jobs:
             '${{ steps.image.outputs.image }}' -f /dev/null
           docker start cromite-re-build
 
-      - name: Apply latest Chrome Pixel UA patch
+      - name: Prepare Cromite from mirrored source when upstream image is missing
+        if: ${{ steps.image.outputs.mode == 'chromium-fallback' }}
+        run: |
+          set -euo pipefail
+
+          docker exec cromite-re-build bash -lc \
+            'mkdir -p /home/lg/working_dir/cromite'
+          tar --exclude='.git' -cf - . | \
+            docker exec -i cromite-re-build tar -xf - -C /home/lg/working_dir/cromite
+
+          docker exec cromite-re-build bash -lc '
+            set -euo pipefail
+            sudo apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y sed
+            cd /home/lg/working_dir/chromium/src
+            git config user.name "Cromite Re Bot"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            cd /home/lg/working_dir
+            bash cromite/tools/images/cromite-source/apply-cromite-patches.sh
+          '
+
+          docker exec \
+            -e WORKSPACE=/home/lg/working_dir \
+            -e HOME=/home/lg/working_dir \
+            -e CIPD_CACHE_DIR=/home/lg/working_dir/.cipd_cache \
+            -e VPYTHON_VIRTUALENV_ROOT=/home/lg/vpython_root \
+            cromite-re-build bash -lc '
+              set -euo pipefail
+              cd "$WORKSPACE"
+              cp cromite/tools/images/cromite-build/goma_auth.py .
+              cp cromite/tools/images/cromite-build/casupload .
+              cp cromite/tools/images/cromite-build/generic_android31.textpb .
+              chmod +x casupload || true
+              bash cromite/tools/images/cromite-build/pre-start.sh
+            '
+
+      - name: Apply latest Chrome Pixel UA patch to upstream build image
+        if: ${{ steps.image.outputs.mode == 'upstream' }}
         run: |
           set -euo pipefail
           docker cp build/patches/Cromite-Re-auto-latest-UA.patch \
@@ -109,6 +159,7 @@ jobs:
             ./Cromite-Re-arm64.apk
           test -s Cromite-Re-arm64.apk
           sha256sum Cromite-Re-arm64.apk | tee Cromite-Re-arm64.apk.sha256
+          ls -lh Cromite-Re-arm64.apk Cromite-Re-arm64.apk.sha256
 
       - name: Prepare release notes
         run: |
