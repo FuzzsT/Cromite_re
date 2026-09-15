@@ -5,6 +5,6 @@
   "ua_mode": "pixel-compat-full",
   "upstream_branch": "master",
   "upstream_repository": "uazo/cromite",
-  "upstream_sha": "5720d78169b1cff417b793248e809d1ddc997965",
+  "upstream_sha": "49c23e54e61a84486bb6581cccf6d51ada75999b",
   "user_agent": "Mozilla/5.0 (Linux; Android 17; Pixel 11 Pro XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.8037.21 Mobile Safari/537.36"
 }
