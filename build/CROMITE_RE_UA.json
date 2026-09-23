@@ -1,9 +1,9 @@
 {
   "android": "17",
   "chrome_major": "154",
-  "chrome_stable": "154.0.8037.49",
+  "chrome_stable": "154.0.8037.57",
   "device": "Pixel 11 Pro XL",
   "mode": "pixel-compat-full",
   "source": "https://versionhistory.googleapis.com/v1/chrome/platforms/android/channels/stable/versions?page_size=200&order_by=version+desc",
-  "user_agent": "Mozilla/5.0 (Linux; Android 17; Pixel 11 Pro XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.8037.49 Mobile Safari/537.36"
+  "user_agent": "Mozilla/5.0 (Linux; Android 17; Pixel 11 Pro XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.8037.57 Mobile Safari/537.36"
 }
