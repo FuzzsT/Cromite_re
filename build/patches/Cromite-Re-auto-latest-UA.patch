@@ -26,7 +26,7 @@ diff --git a/chrome/browser/android/preferences/browser_prefs_android.cc b/chrom
 -  registry->RegisterBooleanPref(prefs::kOverrideUserAgentEnabled, false);
 -  registry->RegisterStringPref(prefs::kOverrideUserAgent, "");
 +  registry->RegisterBooleanPref(prefs::kOverrideUserAgentEnabled, true);
-+  registry->RegisterStringPref(prefs::kOverrideUserAgent, "Mozilla/5.0 (Linux; Android 17; Pixel 11 Pro XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.8037.57 Mobile Safari/537.36");
++  registry->RegisterStringPref(prefs::kOverrideUserAgent, "Mozilla/5.0 (Linux; Android 17; Pixel 11 Pro XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.8059.16 Mobile Safari/537.36");
    registry->RegisterBooleanPref(prefs::kOverrideUserAgentDesktopModeEnabled, false);
    registry->RegisterStringPref(prefs::kOverrideUserAgentDesktopMode, "");
    registry->RegisterBooleanPref(prefs::kDesktopModeViewportMetaEnabled, false);
@@ -37,7 +37,7 @@ diff --git a/chrome/browser/android/preferences/privacy_preferences_manager_impl
    std::string ua = g_browser_process->local_state()->GetString(prefs::kOverrideUserAgent);
    if (ua.empty()) {
 -    ua = ChromeContentBrowserClient().GetUserAgent();
-+    ua = "Mozilla/5.0 (Linux; Android 17; Pixel 11 Pro XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.8037.57 Mobile Safari/537.36";
++    ua = "Mozilla/5.0 (Linux; Android 17; Pixel 11 Pro XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.8059.16 Mobile Safari/537.36";
 +    g_browser_process->local_state()->SetString(prefs::kOverrideUserAgent, ua);
 +    g_browser_process->local_state()->SetBoolean(prefs::kOverrideUserAgentEnabled, true);
 +    overrideUserAgentEnabled = true;
