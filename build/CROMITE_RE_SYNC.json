@@ -1,10 +1,10 @@
 {
-  "chrome_major": "155",
-  "chrome_stable": "155.0.8059.39",
+  "chrome_major": "156",
+  "chrome_stable": "156.0.8078.25",
   "cromite_version": "153.0.8010.37",
   "ua_mode": "pixel-compat-full",
   "upstream_branch": "master",
   "upstream_repository": "uazo/cromite",
   "upstream_sha": "3724efc6ede3d2d94611c1fe71d1b090ebbb40a7",
-  "user_agent": "Mozilla/5.0 (Linux; Android 17; Pixel 11 Pro XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.8059.39 Mobile Safari/537.36"
+  "user_agent": "Mozilla/5.0 (Linux; Android 17; Pixel 11 Pro XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.8078.25 Mobile Safari/537.36"
 }
